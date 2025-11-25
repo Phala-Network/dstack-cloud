@@ -296,6 +296,21 @@ fn persist_tpm_seed(tcti: &str, seed: &[u8]) -> Result<bool> {
     }
 }
 
+fn read_tpm_ek_pub(tcti: &str) -> Result<Option<Vec<u8>>> {
+    let args = ["-c", "0x81010001", "-f", "pem"]; // default EK persistent handle, PEM output
+    let Some(output) = run_tpm2("tpm2_readpublic", &args, tcti)? else {
+        return Ok(None);
+    };
+    if !output.status.success() {
+        warn!(
+            "tpm2_readpublic failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Ok(None);
+    }
+    Ok(Some(output.stdout))
+}
+
 impl InstanceInfo {
     fn is_initialized(&self) -> bool {
         !self.instance_id_seed.is_empty()

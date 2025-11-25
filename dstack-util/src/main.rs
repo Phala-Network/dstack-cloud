@@ -48,6 +48,8 @@ enum Commands {
     Report,
     /// Generate a TDX quote given report data from stdin
     Quote,
+    /// Get TDX event logs
+    Eventlog,
     /// Extend RTMRs
     Extend(ExtendArgs),
     /// Show the current RTMR state
@@ -205,6 +207,13 @@ fn cmd_quote() -> Result<()> {
     io::stdout()
         .write_all(&quote)
         .context("Failed to write quote")?;
+    Ok(())
+}
+
+fn cmd_eventlog() -> Result<()> {
+    let event_logs = att::eventlog::read_event_logs().context("Failed to read event logs")?;
+    serde_json::to_writer_pretty(io::stdout(), &event_logs)
+        .context("Failed to write event logs")?;
     Ok(())
 }
 
@@ -528,6 +537,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Report => cmd_report()?,
         Commands::Quote => cmd_quote()?,
+        Commands::Eventlog => cmd_eventlog()?,
         Commands::Show => cmd_show_mrs()?,
         Commands::Extend(extend_args) => {
             cmd_extend(extend_args)?;
