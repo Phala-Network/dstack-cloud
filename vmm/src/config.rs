@@ -193,6 +193,12 @@ pub struct CvmConfig {
 
     /// Host sharing mode. (9p, vdisk, vvfat)
     pub host_sharing_mode: String,
+
+    /// QGS (Quote Generation Service) vsock port for kernel-level TSM support.
+    /// When set, QEMU will pass this port to tdx-guest for configfs-tsm quote generation.
+    /// The guest kernel will use this vsock port to communicate with the host QGS.
+    /// Default is None (disabled), common value is 4050.
+    pub qgs_port: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

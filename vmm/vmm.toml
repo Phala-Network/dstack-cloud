@@ -40,6 +40,12 @@ qemu_hotplug_off = false
 
 host_sharing_mode = "vvfat"
 
+# QGS (Quote Generation Service) vsock port for kernel-level TSM support.
+# When set, QEMU will pass this port to tdx-guest for configfs-tsm quote generation.
+# The guest kernel will use this vsock port to communicate with the host QGS.
+# Default is None (disabled), common value is 4050.
+qgs_port = 4050
+
 [cvm.networking]
 mode = "user"
 

@@ -792,7 +792,9 @@ impl VmConfig {
 
         let img_ver = self.image.info.version_tuple().unwrap_or_default();
         let support_mr_config_id = img_ver >= (0, 5, 2);
-        let tdx_object = if cfg.use_mrconfigid && support_mr_config_id {
+
+        // Compute mrconfigid if needed
+        let mrconfigid = if cfg.use_mrconfigid && support_mr_config_id {
             let compose_hash = workdir
                 .app_compose_hash()
                 .context("Failed to get compose hash")?;
@@ -819,12 +821,48 @@ impl VmConfig {
                     key_provider_id,
                 }
             };
-            let mrconfigid = BASE64_STANDARD.encode(mr_config.to_mr_config_id());
-            format!("tdx-guest,id=tdx,mrconfigid={mrconfigid}")
+            Some(BASE64_STANDARD.encode(mr_config.to_mr_config_id()))
         } else {
-            "tdx-guest,id=tdx".to_string()
+            None
         };
-        command.arg("-object").arg(tdx_object);
+
+        // Build tdx-guest object with optional quote-generation-socket for kernel-level TSM support
+        #[derive(Serialize)]
+        struct QgsSocket {
+            r#type: &'static str,
+            cid: &'static str,
+            port: String,
+        }
+
+        #[derive(Serialize)]
+        struct TdxGuestObject {
+            #[serde(rename = "qom-type")]
+            qom_type: &'static str,
+            id: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            mrconfigid: Option<String>,
+            #[serde(
+                rename = "quote-generation-socket",
+                skip_serializing_if = "Option::is_none"
+            )]
+            quote_generation_socket: Option<QgsSocket>,
+        }
+
+        let tdx_object = TdxGuestObject {
+            qom_type: "tdx-guest",
+            id: "tdx",
+            mrconfigid: mrconfigid.clone(),
+            quote_generation_socket: cfg.qgs_port.map(|port| QgsSocket {
+                r#type: "vsock",
+                cid: "2",
+                port: port.to_string(),
+            }),
+        };
+
+        // Use JSON format when quote-generation-socket is needed, otherwise use simple format
+        let tdx_object_arg =
+            serde_json::to_string(&tdx_object).context("failed to serialize tdx-guest object")?;
+        command.arg("-object").arg(tdx_object_arg);
         Ok(())
     }
 }
