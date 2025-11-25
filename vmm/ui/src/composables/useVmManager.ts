@@ -95,8 +95,6 @@ type VmFormState = {
   encryptedEnvs: EncryptedEnvEntry[];
   storage_fs: string;
   app_id: string | null;
-  kms_enabled: boolean;
-  local_key_provider_enabled: boolean;
   key_provider?: KeyProviderKind;
   key_provider_id: string;
   gateway_enabled: boolean;
@@ -177,9 +175,7 @@ function createVmFormState(preLaunchScript: string): VmFormState {
     encryptedEnvs: [],
     storage_fs: '',
     app_id: null,
-    kms_enabled: true,
-    local_key_provider_enabled: false,
-    key_provider: undefined,
+    key_provider: 'kms',
     key_provider_id: '',
     gateway_enabled: true,
     public_logs: true,
@@ -681,12 +677,9 @@ type CreateVmPayloadSource = {
     return 'running';
   };
 
-  const kmsEnabled = (vm: any) => vm.appCompose?.kms_enabled || vm.appCompose?.features?.includes('kms');
+  const kmsEnabled = (vm: any) => getKeyProvider(vm) === 'kms';
 
-  const gatewayEnabled = (vm: any) =>
-    vm.appCompose?.gateway_enabled || vm.appCompose?.tproxy_enabled || vm.appCompose?.features?.includes('tproxy-net');
-
-  const defaultTrue = (v: boolean | undefined) => (v === undefined ? true : v);
+  const gatewayEnabled = (vm: any) => vm.appCompose?.gateway_enabled;
 
   function formatMemory(memoryMB?: number) {
     if (!memoryMB) {
@@ -713,12 +706,10 @@ type CreateVmPayloadSource = {
       name: vmForm.value.name,
       runner: 'docker-compose',
       docker_compose_file: vmForm.value.dockerComposeFile,
-      kms_enabled: vmForm.value.kms_enabled,
       gateway_enabled: vmForm.value.gateway_enabled,
       public_logs: vmForm.value.public_logs,
       public_sysinfo: vmForm.value.public_sysinfo,
       public_tcbinfo: vmForm.value.public_tcbinfo,
-      local_key_provider_enabled: vmForm.value.local_key_provider_enabled,
       key_provider_id: vmForm.value.key_provider_id,
       allowed_envs: vmForm.value.encryptedEnvs.map((env) => env.key),
       no_instance_id: !vmForm.value.gateway_enabled,
@@ -748,14 +739,6 @@ type CreateVmPayloadSource = {
     }
 
     const imgFeatures = imageVersionFeatures(imageVersion(vmForm.value.image));
-    if (imgFeatures.compose_version < 2) {
-      const features: string[] = [];
-      if (vmForm.value.kms_enabled) features.push('kms');
-      if (vmForm.value.gateway_enabled) features.push('tproxy-net');
-      appCompose.features = features;
-      appCompose.manifest_version = 1;
-      appCompose.version = '1.0.0';
-    }
     if (imgFeatures.compose_version < 3) {
       appCompose.tproxy_enabled = appCompose.gateway_enabled;
       delete appCompose.gateway_enabled;
@@ -794,12 +777,10 @@ type CreateVmPayloadSource = {
       () => vmForm.value.name,
       () => vmForm.value.dockerComposeFile,
       () => vmForm.value.preLaunchScript,
-      () => vmForm.value.kms_enabled,
       () => vmForm.value.gateway_enabled,
       () => vmForm.value.public_logs,
       () => vmForm.value.public_sysinfo,
       () => vmForm.value.public_tcbinfo,
-      () => vmForm.value.local_key_provider_enabled,
       () => vmForm.value.key_provider,
       () => vmForm.value.key_provider_id,
       () => vmForm.value.encryptedEnvs,
@@ -959,7 +940,7 @@ type CreateVmPayloadSource = {
       const composeFile = await makeAppComposeFile();
       const encryptedEnv = await encryptEnv(
         vmForm.value.encryptedEnvs,
-        vmForm.value.kms_enabled,
+        vmForm.value.key_provider === 'kms',
         vmForm.value.app_id,
       );
       const payload = buildCreateVmPayload({
@@ -1073,6 +1054,19 @@ type CreateVmPayloadSource = {
     }
   }
 
+  function getKeyProvider(vm: VmListItem): KeyProviderKind {
+    if (vm.appCompose?.key_provider) {
+      return vm.appCompose?.key_provider;
+    }
+    if (vm.appCompose?.kms_enabled) {
+      return 'kms';
+    }
+    if (vm.appCompose?.local_key_provider_enabled) {
+      return 'local';
+    }
+    return 'none';
+  }
+
   async function showCloneConfig(vm: VmListItem) {
     const theVm = await ensureVmDetails(vm);
     if (!theVm?.configuration?.compose_file) {
@@ -1083,7 +1077,7 @@ type CreateVmPayloadSource = {
 
     // Populate vmForm with current VM data, but clear envs and ports
     vmForm.value = {
-      name: `${config.name || vm.name}-cloned`,
+      name: `${config.name || vm.name}`,
       image: config.image || '',
       dockerComposeFile: theVm.appCompose?.docker_compose_file || '',
       preLaunchScript: theVm.appCompose?.pre_launch_script || '',
@@ -1101,10 +1095,8 @@ type CreateVmPayloadSource = {
       ports: [], // Clear port mappings
       storage_fs: theVm.appCompose?.storage_fs || 'ext4',
       app_id: config.app_id || '',
-      kms_enabled: !!theVm.appCompose?.kms_enabled,
       kms_urls: config.kms_urls || [],
-      local_key_provider_enabled: !!theVm.appCompose?.local_key_provider_enabled,
-      key_provider: theVm.appCompose?.key_provider,
+      key_provider: getKeyProvider(theVm),
       key_provider_id: theVm.appCompose?.key_provider_id || '',
       gateway_enabled: !!theVm.appCompose?.gateway_enabled,
       gateway_urls: config.gateway_urls || [],
@@ -1443,15 +1435,11 @@ type CreateVmPayloadSource = {
   function getVmFeatures(vm: VmListItem) {
     const features = [];
 
-    // Check KMS
-    const kmsEnabled = vm.appCompose?.kms_enabled || vm.appCompose?.features?.includes('kms') ||
-                     vm.configuration?.kms_urls?.length > 0;
-    if (kmsEnabled) features.push("kms");
+    const kp = getKeyProvider(vm);
+    if (kp && kp != 'none') features.push(kp);
 
     // Check Gateway/TProxy
-    const gatewayEnabled = vm.appCompose?.gateway_enabled || vm.appCompose?.tproxy_enabled ||
-                          vm.appCompose?.features?.includes('tproxy-net') || vm.configuration?.gateway_urls?.length > 0;
-    if (gatewayEnabled) features.push("gateway");
+    if (vm.appCompose?.gateway_enabled) features.push("gateway");
 
     // Check other features from appCompose
     if (vm.appCompose?.public_logs) features.push("logs");
