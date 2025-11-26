@@ -547,13 +547,19 @@ tdx_attest_error_t tdx_att_get_quote(
             if (errno == EBUSY || errno == EINTR || errno == ETIMEDOUT) {
                 TDX_TRACE;
                 ret = TDX_ATTEST_ERROR_BUSY;
-            } else
-                ret = TDX_ATTEST_ERROR_QUOTE_FAILURE;
+                close(fd_lock);
+                close(fd);
+                free(p_blob_payload);
+                syslog(LOG_ERR, "libtdx_attest: failed to read outblob - busy/timeout.");
+                return ret;
+            }
+            // configfs quote failed (empty outblob), fallback to vsock
             close(fd_lock);
             close(fd);
             free(p_blob_payload);
-            syslog(LOG_ERR, "libtdx_attest: failed to read outblob.");
-            return ret;
+            p_blob_payload = NULL;
+            syslog(LOG_INFO, "libtdx_attest: configfs outblob empty - fallback to vsock mode.");
+            break;
         }
         close(fd);
 
@@ -562,9 +568,12 @@ tdx_attest_error_t tdx_att_get_quote(
         fprintf(stdout, "\nquote size: %d\n", quote_size);
 #endif
         if (quote_size <= QUOTE_MIN_SIZE || quote_size == QUOTE_BUF_SIZE) {
+            // Invalid quote size from configfs, fallback to vsock
             close(fd_lock);
             free(p_blob_payload);
-            return TDX_ATTEST_ERROR_QUOTE_FAILURE;
+            p_blob_payload = NULL;
+            syslog(LOG_INFO, "libtdx_attest: configfs quote invalid size - fallback to vsock mode.");
+            break;
         }
 
         long generation3;
