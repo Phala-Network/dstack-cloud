@@ -2,12 +2,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use anyhow::bail;
 use anyhow::Context;
 use cc_eventlog::TdxEventLog;
 
 use tdx_attest_sys as sys;
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::ptr;
 use std::slice;
 
@@ -20,6 +22,9 @@ use thiserror::Error;
 use crate::TdxReport;
 use crate::TdxReportData;
 use crate::{Result, TdxUuid};
+
+/// TSM measurements sysfs paths for RTMR extend (kernel 6.17+)
+const TSM_MEASUREMENTS_PATH: &str = "/sys/class/misc/tdx_guest/measurements";
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, Error)]
@@ -130,48 +135,25 @@ pub fn log_rtmr_event(log: &TdxEventLog) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// TSM measurements sysfs paths for RTMR extend (kernel 6.17+)
-const TSM_MEASUREMENTS_PATHS: &[&str] = &[
-    // Standard path when tdx_guest is loaded
-    "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0017:00/tdx_guest/measurements",
-    // Alternative path pattern
-    "/sys/class/misc/tdx_guest/device/measurements",
-];
-
 /// Find the TSM measurements sysfs directory
-fn find_tsm_measurements_dir() -> Option<std::path::PathBuf> {
-    for base_path in TSM_MEASUREMENTS_PATHS {
-        let path = std::path::Path::new(base_path);
-        if path.is_dir() {
-            return Some(path.to_path_buf());
-        }
+fn find_tsm_measurements_dir() -> Option<PathBuf> {
+    let path = PathBuf::from(TSM_MEASUREMENTS_PATH);
+    if !path.exists() {
+        return None;
     }
-
-    // Try to find via glob pattern
-    if let Ok(entries) = std::fs::read_dir("/sys/devices") {
-        for entry in entries.flatten() {
-            let measurements_path = entry.path().join("tdx_guest/measurements");
-            if measurements_path.is_dir() {
-                return Some(measurements_path);
-            }
-        }
-    }
-
-    None
+    Some(path)
 }
 
 /// Extend RTMR using TSM measurements sysfs interface (kernel 6.17+)
-fn extend_rtmr_tsm(index: u32, digest: &[u8; 48]) -> std::io::Result<()> {
-    let measurements_dir = find_tsm_measurements_dir()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "TSM measurements sysfs not found"))?;
+fn extend_rtmr_tsm(index: u32, digest: &[u8; 48]) -> anyhow::Result<()> {
+    let Some(measurements_dir) = find_tsm_measurements_dir() else {
+        bail!("TSM measurements sysfs not found")
+    };
 
     let rtmr_file = measurements_dir.join(format!("rtmr{}:sha384", index));
 
     if !rtmr_file.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("RTMR{} sysfs file not found: {:?}", index, rtmr_file),
-        ));
+        bail!("RTMR{} sysfs file not found: {:?}", index, rtmr_file);
     }
 
     fs::write(&rtmr_file, digest)?;
