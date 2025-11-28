@@ -311,12 +311,6 @@ fn read_tpm_ek_pub(tcti: &str) -> Result<Option<Vec<u8>>> {
     Ok(Some(output.stdout))
 }
 
-impl InstanceInfo {
-    fn is_initialized(&self) -> bool {
-        !self.instance_id_seed.is_empty()
-    }
-}
-
 #[derive(Clone)]
 pub struct HostShareDir {
     base_dir: PathBuf,
@@ -1047,9 +1041,67 @@ impl<'a> Stage0<'a> {
         Ok(())
     }
 
+    fn is_disk_initialized(&self, opts: &DstackOptions) -> bool {
+        let device = &self.args.device;
+
+        // For encrypted storage, just check if LUKS header exists
+        // The filesystem check happens after the LUKS device is opened
+        let has_luks = if opts.storage_encrypted {
+            let result = cmd!(cryptsetup isLuks $device).is_ok();
+            if result {
+                info!("LUKS header detected on {}", device.display());
+            }
+            result
+        } else {
+            false
+        };
+
+        // Check if filesystem exists
+        let has_fs = match opts.storage_fs {
+            FsType::Zfs => {
+                // Check if zpool exists by trying to import it in readonly mode
+                if cmd!(zpool import -N -o readonly=on dstack).is_ok() {
+                    cmd!(zpool export dstack).ok();
+                    info!("ZFS pool 'dstack' detected");
+                    true
+                } else {
+                    false
+                }
+            }
+            FsType::Ext4 if !opts.storage_encrypted => {
+                // For unencrypted ext4, check the device directly
+                if cmd!(blkid -s TYPE -o value $device)
+                    .map(|out| out.trim() == "ext4")
+                    .unwrap_or(false)
+                {
+                    info!("ext4 filesystem detected on {}", device.display());
+                    true
+                } else {
+                    false
+                }
+            }
+            FsType::Ext4 => {
+                // For encrypted ext4, we can only check after LUKS is opened
+                // So we rely on LUKS header presence as indicator
+                has_luks
+            }
+        };
+
+        // For encrypted ZFS, need both LUKS header AND zpool to exist
+        let initialized = if opts.storage_encrypted && opts.storage_fs == FsType::Zfs {
+            has_luks && has_fs
+        } else {
+            has_luks || has_fs
+        };
+
+        if !initialized {
+            info!("No existing filesystem detected on {}", device.display());
+        }
+        initialized
+    }
+
     async fn mount_data_disk(
         &self,
-        initialized: bool,
         disk_crypt_key: &str,
         opts: &DstackOptions,
     ) -> Result<()> {
@@ -1065,7 +1117,9 @@ impl<'a> Stage0<'a> {
 
         cmd!(mkdir -p $mount_point).context("Failed to create mount point")?;
 
-        if !initialized {
+        let disk_initialized = self.is_disk_initialized(opts);
+
+        if !disk_initialized {
             self.vmm
                 .notify_q("boot.progress", "initializing data disk")
                 .await;
@@ -1293,7 +1347,6 @@ impl<'a> Stage0<'a> {
     }
 
     async fn setup_fs(self) -> Result<Stage1<'a>> {
-        let is_initialized = self.shared.instance_info.is_initialized();
         let app_info = self
             .measure_app_info()
             .context("Failed to measure app info")?;
@@ -1324,7 +1377,6 @@ impl<'a> Stage0<'a> {
         );
 
         self.mount_data_disk(
-            is_initialized,
             &hex::encode(&app_keys.disk_crypt_key),
             &opts,
         )
