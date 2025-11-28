@@ -13,11 +13,11 @@ use qvl::{
     verify::VerifiedReport,
 };
 use serde::Serialize;
-use sha2::{Digest as _, Sha384};
+use sha2::Digest as _;
 use x509_parser::parse_x509_certificate;
 
 use crate::{oids, traits::CertExt};
-use cc_eventlog::TdxEventLog as EventLog;
+use cc_eventlog::TdxEventLogEntry as EventLog;
 use serde_human_bytes as hex_bytes;
 
 /// The content type of a quote. A CVM should only generate quotes for these types.
@@ -127,8 +127,8 @@ impl<T> Attestation<T> {
     }
 
     /// Replay event logs
-    pub fn replay_event_logs(&self, to_event: Option<&str>) -> Result<[[u8; 48]; 4]> {
-        replay_event_logs(&self.event_log, to_event)
+    pub fn replay_rtmr3(&self, to_event: Option<&str>) -> Result<[u8; 48]> {
+        cc_eventlog::replay_event_logs(&self.event_log, to_event, 3)
     }
 
     fn find_event_payload(&self, event: &str) -> Result<Vec<u8>> {
@@ -158,8 +158,8 @@ impl<T> Attestation<T> {
 
     /// Decode the app info from the event log
     pub fn decode_app_info(&self, boottime_mr: bool) -> Result<AppInfo> {
-        let rtmrs = self
-            .replay_event_logs(boottime_mr.then_some("boot-mr-done"))
+        let rtmr3 = self
+            .replay_rtmr3(boottime_mr.then_some("boot-mr-done"))
             .context("Failed to replay event logs")?;
         let quote = self.decode_quote()?;
         let device_id = sha256(&[&quote.header.user_data]).to_vec();
@@ -176,15 +176,21 @@ impl<T> Attestation<T> {
         };
         let mr_system = sha256(&[
             &td_report.mr_td,
-            &rtmrs[0],
-            &rtmrs[1],
-            &rtmrs[2],
+            &td_report.rt_mr0,
+            &td_report.rt_mr1,
+            &td_report.rt_mr2,
             &mr_key_provider,
         ]);
         let mr_aggregated = {
             use sha2::{Digest as _, Sha256};
             let mut hasher = Sha256::new();
-            for d in [&td_report.mr_td, &rtmrs[0], &rtmrs[1], &rtmrs[2], &rtmrs[3]] {
+            for d in [
+                &td_report.mr_td,
+                &td_report.rt_mr0,
+                &td_report.rt_mr1,
+                &td_report.rt_mr2,
+                &rtmr3,
+            ] {
                 hasher.update(d);
             }
             // For backward compatibility. Don't include mr_config_id, mr_owner, mr_owner_config if they are all 0.
@@ -204,10 +210,10 @@ impl<T> Attestation<T> {
             instance_id: self.find_event_payload("instance-id").unwrap_or_default(),
             device_id,
             mrtd: td_report.mr_td,
-            rtmr0: rtmrs[0],
-            rtmr1: rtmrs[1],
-            rtmr2: rtmrs[2],
-            rtmr3: rtmrs[3],
+            rtmr0: td_report.rt_mr0,
+            rtmr1: td_report.rt_mr1,
+            rtmr2: td_report.rt_mr2,
+            rtmr3,
             os_image_hash: self.find_event_payload("os-image-hash").unwrap_or_default(),
             mr_system,
             mr_aggregated,
@@ -218,7 +224,7 @@ impl<T> Attestation<T> {
     /// Decode the rootfs hash from the event log
     pub fn decode_rootfs_hash(&self) -> Result<String> {
         self.find_event(3, "rootfs-hash")
-            .map(|event| hex::encode(event.digest))
+            .map(|event| hex::encode(event.digest()))
     }
 
     /// Decode the report data in the quote
@@ -329,20 +335,14 @@ impl Attestation {
             .context("Failed to get collateral")?;
         if let Some(report) = report.report.as_td10() {
             // Replay the event logs
-            let rtmrs = self
-                .replay_event_logs(None)
+            let rtmr3 = self
+                .replay_rtmr3(None)
                 .context("Failed to replay event logs")?;
-            if rtmrs != [report.rt_mr0, report.rt_mr1, report.rt_mr2, report.rt_mr3] {
-                let hexed_mrs = |mrs: &[[u8; 48]]| {
-                    mrs.iter()
-                        .map(|m| hex::encode(m))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                };
+            if rtmr3 != report.rt_mr3 {
                 bail!(
-                    "RTMR mismatch, expected: {}, got: {}",
-                    hexed_mrs(&rtmrs),
-                    hexed_mrs(&[report.rt_mr0, report.rt_mr1, report.rt_mr2, report.rt_mr3]),
+                    "RTMR3 mismatch, quoted: {}, replayed: {}",
+                    hex::encode(report.rt_mr3),
+                    hex::encode(rtmr3),
                 );
             }
         }
@@ -432,34 +432,6 @@ pub struct AppInfo {
     /// Key provider info
     #[serde(with = "hex_bytes")]
     pub key_provider_info: Vec<u8>,
-}
-
-/// Replay event logs
-pub fn replay_event_logs(eventlog: &[EventLog], to_event: Option<&str>) -> Result<[[u8; 48]; 4]> {
-    let mut rtmrs = [[0u8; 48]; 4];
-    for idx in 0..4 {
-        let mut mr = [0u8; 48];
-
-        for event in eventlog.iter() {
-            event
-                .validate()
-                .context("Failed to validate event digest")?;
-            if event.imr == idx {
-                let mut hasher = Sha384::new();
-                hasher.update(mr);
-                hasher.update(event.digest);
-                mr = hasher.finalize().into();
-            }
-            if let Some(to_event) = to_event {
-                if event.event == to_event {
-                    break;
-                }
-            }
-        }
-        rtmrs[idx as usize] = mr;
-    }
-
-    Ok(rtmrs)
 }
 
 fn sha256(data: &[&[u8]]) -> [u8; 32] {

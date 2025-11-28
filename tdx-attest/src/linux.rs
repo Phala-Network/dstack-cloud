@@ -4,7 +4,7 @@
 
 use anyhow::bail;
 use anyhow::Context;
-use cc_eventlog::TdxEventLog;
+use cc_eventlog::TdxEventLogEntry;
 
 use tdx_attest_sys as sys;
 
@@ -111,7 +111,7 @@ pub fn get_report(report_data: &TdxReportData) -> Result<TdxReport> {
     Ok(report)
 }
 
-pub fn log_rtmr_event(log: &TdxEventLog) -> anyhow::Result<()> {
+pub fn log_rtmr_event(log: &TdxEventLogEntry) -> anyhow::Result<()> {
     // Append to event log
     let logline = serde_json::to_string(&log).context("Failed to serialize event log")?;
 

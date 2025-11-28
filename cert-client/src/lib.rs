@@ -8,10 +8,10 @@ use dstack_types::{AppKeys, KeyProvider};
 use ra_rpc::client::{RaClient, RaClientConfig};
 use ra_tls::{
     attestation::QuoteContentType,
-    cert::{generate_ra_cert, CaCert, CertConfig, CertSigningRequest},
+    cert::{compress_event_log, generate_ra_cert, CaCert, CertConfig, CertSigningRequest},
     rcgen::KeyPair,
 };
-use tdx_attest::{eventlog::read_event_logs, get_quote};
+use tdx_attest::{eventlog::read_runtime_event_logs, get_quote};
 
 pub enum CertRequestClient {
     Local {
@@ -104,9 +104,9 @@ impl CertRequestClient {
         let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
         let (quote, event_log) = if !no_ra {
             let (_, quote) = get_quote(&report_data, None).context("Failed to get quote")?;
-            let event_log = read_event_logs().context("Failed to decode event log")?;
+            let event_logs = read_runtime_event_logs().context("Failed to decode event log")?;
             let event_log =
-                serde_json::to_vec(&event_log).context("Failed to serialize event log")?;
+                serde_json::to_vec(&event_logs).context("Failed to serialize RTMR3 events")?;
             (quote, event_log)
         } else {
             (vec![], vec![])

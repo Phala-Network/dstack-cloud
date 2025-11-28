@@ -352,7 +352,7 @@ fn cmd_replay_imr() -> Result<()> {
         if event.imr < 4 {
             let mut hasher = sha2::Sha384::new();
             hasher.update(rtmrs[event.imr as usize]);
-            hasher.update(event.digest);
+            hasher.update(event.digest());
             rtmrs[event.imr as usize] = hasher.finalize().into();
         }
     }

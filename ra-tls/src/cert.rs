@@ -14,7 +14,7 @@ use rcgen::{
     ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PublicKeyData, SanType,
 };
 use ring::rand::SystemRandom;
-use tdx_attest::eventlog::read_event_logs;
+use tdx_attest::eventlog::read_runtime_event_logs;
 use tdx_attest::get_quote;
 use x509_parser::der_parser::Oid;
 use x509_parser::prelude::{FromDer as _, X509Certificate};
@@ -337,8 +337,11 @@ pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertP
     let pubkey = key.public_key_der();
     let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
     let (_, quote) = get_quote(&report_data, None).context("Failed to get quote")?;
-    let event_logs = read_event_logs().context("Failed to read event logs")?;
-    let event_log = serde_json::to_vec(&event_logs).context("Failed to serialize event logs")?;
+    let event_logs = read_runtime_event_logs().context("Failed to read event logs")?;
+
+    let event_log = serde_json::to_vec(&event_logs).context("Failed to serialize RTMR3 events")?;
+
+
     let req = CertRequest::builder()
         .subject("RA-TLS TEMP Cert")
         .quote(&quote)

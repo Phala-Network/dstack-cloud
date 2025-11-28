@@ -9,12 +9,12 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use cc_eventlog::TdxEventLog as EventLog;
+use cc_eventlog::TdxEventLogEntry as EventLog;
 use dstack_mr::{RtmrLog, TdxMeasurementDetails, TdxMeasurements};
 use dstack_types::VmConfig;
 use ra_tls::attestation::{Attestation, VerifiedAttestation};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256, Sha384};
+use sha2::{Digest as _, Sha256};
 use tokio::{io::AsyncWriteExt, process::Command};
 use tracing::{debug, info, warn};
 
@@ -22,38 +22,6 @@ use crate::types::{
     AcpiTables, RtmrEventEntry, RtmrEventStatus, RtmrMismatch, VerificationDetails,
     VerificationRequest, VerificationResponse,
 };
-
-#[derive(Debug, Clone)]
-struct RtmrComputationResult {
-    event_indices: [Vec<usize>; 4],
-    rtmrs: [[u8; 48]; 4],
-}
-
-fn replay_event_logs(eventlog: &[EventLog]) -> Result<RtmrComputationResult> {
-    let mut event_indices: [Vec<usize>; 4] = Default::default();
-    let mut rtmrs: [[u8; 48]; 4] = [[0u8; 48]; 4];
-
-    for idx in 0..4 {
-        for (event_idx, event) in eventlog.iter().enumerate() {
-            event
-                .validate()
-                .context("Failed to validate event digest")?;
-
-            if event.imr == idx {
-                event_indices[idx as usize].push(event_idx);
-                let mut hasher = Sha384::new();
-                hasher.update(rtmrs[idx as usize]);
-                hasher.update(event.digest);
-                rtmrs[idx as usize] = hasher.finalize().into();
-            }
-        }
-    }
-
-    Ok(RtmrComputationResult {
-        event_indices,
-        rtmrs,
-    })
-}
 
 fn collect_rtmr_mismatch(
     rtmr_label: &str,
@@ -76,7 +44,7 @@ fn collect_rtmr_mismatch(
                 } else {
                     event.event.clone()
                 };
-                let status = if event.digest == expected_digest.as_slice() {
+                let status = if event.digest() == expected_digest.as_slice() {
                     RtmrEventStatus::Match
                 } else {
                     RtmrEventStatus::Mismatch
@@ -85,7 +53,7 @@ fn collect_rtmr_mismatch(
                     index: idx,
                     event_type: event.event_type,
                     event_name,
-                    actual_digest: hex::encode(event.digest),
+                    actual_digest: hex::encode(event.digest()),
                     expected_digest: Some(hex::encode(expected_digest)),
                     payload_len: event.event_payload.len(),
                     status,
@@ -114,7 +82,7 @@ fn collect_rtmr_mismatch(
                 } else {
                     event.event.clone()
                 },
-                hex::encode(event.digest),
+                hex::encode(event.digest()),
                 event.event_payload.len(),
             ),
             None => (0, "(missing)".to_string(), String::new(), 0),
@@ -537,10 +505,10 @@ impl CvmVerifier {
         let event_log: Vec<EventLog> = serde_json::from_slice(&attestation.raw_event_log)
             .context("Failed to parse event log for mismatch analysis")?;
 
-        let computation_result = replay_event_logs(&event_log)
+        let rtmr3 = cc_eventlog::replay_event_logs(&event_log, None, 3)
             .context("Failed to replay event logs for mismatch analysis")?;
 
-        if computation_result.rtmrs[3] != report.rt_mr3 {
+        if rtmr3 != report.rt_mr3 {
             bail!("RTMR3 mismatch");
         }
 
@@ -562,7 +530,7 @@ impl CvmVerifier {
                         &expected_mrs.rtmr0,
                         &verified_mrs.rtmr0,
                         &expected_logs[0],
-                        &computation_result.event_indices[0],
+                        &[],
                         &event_log,
                     ));
                 }
@@ -573,7 +541,7 @@ impl CvmVerifier {
                         &expected_mrs.rtmr1,
                         &verified_mrs.rtmr1,
                         &expected_logs[1],
-                        &computation_result.event_indices[1],
+                        &[],
                         &event_log,
                     ));
                 }
@@ -584,7 +552,7 @@ impl CvmVerifier {
                         &expected_mrs.rtmr2,
                         &verified_mrs.rtmr2,
                         &expected_logs[2],
-                        &computation_result.event_indices[2],
+                        &[],
                         &event_log,
                     ));
                 }
