@@ -2458,6 +2458,7 @@ dependencies = [
  "sha3",
  "sodiumbox",
  "tdx-attest",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",

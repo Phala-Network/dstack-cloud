@@ -5,10 +5,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Display,
-    io::{ErrorKind, Write},
     ops::Deref,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
     str::FromStr,
     time::Duration,
 };
@@ -40,6 +39,7 @@ use crate::{
     crypto::dh_decrypt,
     gen_app_keys_from_seed,
     host_api::HostApi,
+    tpm::{self, TpmContext},
     utils::{
         deserialize_json_file, sha256, sha256_file, AppCompose, AppKeys, KeyProviderKind, SysConfig,
     },
@@ -149,177 +149,6 @@ fn parse_dstack_options(shared: &HostShared) -> Result<DstackOptions> {
         options.storage_fs = fs.parse().context("Failed to parse storage_fs")?;
     }
     Ok(options)
-}
-
-const TPM_ROOT_KEY_BYTES: usize = 32;
-const TPM_NV_INDEX: &str = "0x01801100";
-
-fn tpm_tcti() -> Option<String> {
-    if Path::new("/dev/tpmrm0").exists() {
-        Some("device:/dev/tpmrm0".into())
-    } else if Path::new("/dev/tpm0").exists() {
-        Some("device:/dev/tpm0".into())
-    } else {
-        None
-    }
-}
-
-fn run_tpm2(cmd: &str, args: &[&str], tcti: &str) -> Result<Option<std::process::Output>> {
-    let mut command = Command::new(cmd);
-    command.env("TPM2TOOLS_TCTI", tcti).args(args);
-    match command.output() {
-        Ok(output) => Ok(Some(output)),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err.into()),
-    }
-}
-
-fn decode_seed_bytes(mut data: Vec<u8>) -> Option<[u8; TPM_ROOT_KEY_BYTES]> {
-    if data.len() >= TPM_ROOT_KEY_BYTES {
-        data.truncate(TPM_ROOT_KEY_BYTES);
-        return data.try_into().ok();
-    }
-
-    if data.is_empty() {
-        return None;
-    }
-
-    let text = String::from_utf8_lossy(&data);
-    let mut bytes = Vec::new();
-    for token in text.split_whitespace() {
-        let token = token.trim_start_matches("0x").trim_start_matches("0X");
-        if token.len() < 2 {
-            continue;
-        }
-        if let Ok(byte) = u8::from_str_radix(&token[..2], 16) {
-            bytes.push(byte);
-        }
-    }
-    if bytes.len() >= TPM_ROOT_KEY_BYTES {
-        bytes.truncate(TPM_ROOT_KEY_BYTES);
-        return bytes.try_into().ok();
-    }
-
-    let hex_str: String = text.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-    if hex_str.len() >= TPM_ROOT_KEY_BYTES * 2 {
-        if let Ok(mut decoded) = hex::decode(&hex_str[..TPM_ROOT_KEY_BYTES * 2]) {
-            decoded.truncate(TPM_ROOT_KEY_BYTES);
-            return decoded.try_into().ok();
-        }
-    }
-
-    None
-}
-
-fn tpm_nv_exists(tcti: &str, index: &str) -> Result<bool> {
-    let Some(output) = run_tpm2("tpm2_nvreadpublic", &[index], tcti)? else {
-        return Ok(false);
-    };
-    Ok(output.status.success())
-}
-
-fn read_tpm_seed(tcti: &str) -> Result<Option<[u8; TPM_ROOT_KEY_BYTES]>> {
-    // Check if NV index exists first to avoid noisy error messages
-    if !tpm_nv_exists(tcti, TPM_NV_INDEX)? {
-        return Ok(None);
-    }
-    let size = TPM_ROOT_KEY_BYTES.to_string();
-    let args = ["-C", "o", "-s", &size, TPM_NV_INDEX];
-    let Some(output) = run_tpm2("tpm2_nvread", &args, tcti)? else {
-        return Ok(None);
-    };
-    if !output.status.success() {
-        warn!(
-            "tpm2_nvread {TPM_NV_INDEX} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return Ok(None);
-    }
-    Ok(decode_seed_bytes(output.stdout))
-}
-
-fn tpm_random_seed(tcti: &str) -> Result<Option<[u8; TPM_ROOT_KEY_BYTES]>> {
-    let size = TPM_ROOT_KEY_BYTES.to_string();
-    let Some(output) = run_tpm2("tpm2_getrandom", &[&size], tcti)? else {
-        return Ok(None);
-    };
-    if !output.status.success() {
-        warn!(
-            "tpm2_getrandom failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return Ok(None);
-    }
-    Ok(decode_seed_bytes(output.stdout))
-}
-
-fn persist_tpm_seed(tcti: &str, seed: &[u8]) -> Result<bool> {
-    let size = seed.len().to_string();
-    if let Some(output) = run_tpm2(
-        "tpm2_nvdefine",
-        &[
-            "-C",
-            "o",
-            "-s",
-            &size,
-            "-a",
-            "ownerread|ownerwrite",
-            TPM_NV_INDEX,
-        ],
-        tcti,
-    )? {
-        if !output.status.success() {
-            warn!(
-                "tpm2_nvdefine {TPM_NV_INDEX} failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-    } else {
-        return Ok(false);
-    }
-
-    let mut child = Command::new("tpm2_nvwrite");
-    child
-        .env("TPM2TOOLS_TCTI", tcti)
-        .args(["-C", "o", "-i", "-", TPM_NV_INDEX])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = child.spawn().context("Failed to start tpm2_nvwrite")?;
-    child
-        .stdin
-        .as_mut()
-        .context("Failed to open stdin for tpm2_nvwrite")?
-        .write_all(seed)?;
-
-    let output = child
-        .wait_with_output()
-        .context("Failed to wait for tpm2_nvwrite")?;
-    if output.status.success() {
-        Ok(true)
-    } else {
-        warn!(
-            "tpm2_nvwrite {TPM_NV_INDEX} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(false)
-    }
-}
-
-fn read_tpm_ek_pub(tcti: &str) -> Result<Option<Vec<u8>>> {
-    let args = ["-c", "0x81010001", "-f", "pem"]; // default EK persistent handle, PEM output
-    let Some(output) = run_tpm2("tpm2_readpublic", &args, tcti)? else {
-        return Ok(None);
-    };
-    if !output.status.success() {
-        warn!(
-            "tpm2_readpublic failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return Ok(None);
-    }
-    Ok(Some(output.stdout))
 }
 
 #[derive(Clone)]
@@ -913,52 +742,52 @@ impl<'a> Stage0<'a> {
         Ok(app_keys)
     }
 
-    fn generate_tpm_app_keys(&self) -> Result<AppKeys> {
-        let Some(tcti) = tpm_tcti() else {
-            warn!("TPM key provider selected but no TPM device found; using random seed");
-            let seed: [u8; TPM_ROOT_KEY_BYTES] = rand::thread_rng().gen();
+    fn generate_tpm_app_keys(&self, app_compose_hash: &[u8; 32]) -> Result<AppKeys> {
+        let tpm = TpmContext::detect().context("failed to detect TPM context")?;
+
+        // Get PCR policy for sealing (boot chain + app PCR)
+        let pcr_policy = tpm::default_pcr_policy();
+
+        // Extend app PCR with app-compose hash BEFORE unsealing
+        // This ensures the sealed data is bound to this specific app configuration
+        tpm.pcr_extend_sha256(tpm::APP_PCR, app_compose_hash)?;
+
+        // Dump all PCR values (0-15) AFTER extending for debugging
+        let all_pcrs =
+            tpm::PcrSelection::sha256(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        info!("PCR values AFTER extending PCR {}:", tpm::APP_PCR);
+        tpm.dump_pcr_values(&all_pcrs);
+
+        // Try to read sealed seed (bound to PCR values including app PCR)
+        if let Some(seed) = tpm
+            .unseal::<32>(tpm::SEALED_NV_INDEX, tpm::PRIMARY_KEY_HANDLE, &pcr_policy)
+            .context("failed to unseal from TPM")?
+        {
+            info!(
+                "unsealed root key seed from TPM (PCR policy: {})",
+                pcr_policy.to_arg()
+            );
             return gen_app_keys_from_seed(&seed, KeyProviderKind::Tpm, None)
-                .context("Failed to generate TPM app keys");
-        };
-
-        match read_tpm_seed(&tcti) {
-            Ok(Some(seed)) => {
-                info!("Loaded root key seed from TPM NV index {TPM_NV_INDEX}");
-                return gen_app_keys_from_seed(&seed, KeyProviderKind::Tpm, None)
-                    .context("Failed to generate TPM app keys");
-            }
-            Ok(None) => {}
-            Err(err) => warn!("Failed to read TPM root key seed: {err:?}"),
+                .context("failed to generate TPM app keys");
         }
 
-        let seed = match tpm_random_seed(&tcti) {
-            Ok(Some(seed)) => {
-                info!("Generated root key seed using TPM RNG");
-                seed
-            }
-            Ok(None) => {
-                info!("TPM RNG unavailable; generating root key seed from OS RNG");
-                rand::thread_rng().gen()
-            }
-            Err(err) => {
-                warn!("TPM RNG failed: {err:?}; generating root key seed from OS RNG");
-                rand::thread_rng().gen()
-            }
-        };
-
-        match persist_tpm_seed(&tcti, &seed) {
-            Ok(true) => {}
-            Ok(false) => {
-                warn!("Failed to persist root key seed to TPM; continuing with in-memory seed")
-            }
-            Err(err) => warn!("Failed to write root key seed to TPM: {err:?}"),
-        }
+        // No sealed seed exists, generate new one
+        info!("no sealed seed found, generating new seed...");
+        let seed: [u8; 32] = tpm.get_random().context("TPM RNG unavailable")?;
+        // Seal the new seed to TPM with PCR policy (including app PCR)
+        tpm.seal(
+            &seed,
+            tpm::SEALED_NV_INDEX,
+            tpm::PRIMARY_KEY_HANDLE,
+            &pcr_policy,
+        )
+        .context("failed to seal seed to TPM")?;
 
         gen_app_keys_from_seed(&seed, KeyProviderKind::Tpm, None)
-            .context("Failed to generate TPM app keys")
+            .context("failed to generate TPM app keys")
     }
 
-    async fn request_app_keys(&self) -> Result<AppKeys> {
+    async fn request_app_keys(&self, app_compose_hash: &[u8; 32]) -> Result<AppKeys> {
         let key_provider = self.shared.app_compose.key_provider();
         match key_provider {
             KeyProviderKind::Kms => self.request_app_keys_from_kms().await,
@@ -969,7 +798,10 @@ impl<'a> Stage0<'a> {
                 gen_app_keys_from_seed(&seed, KeyProviderKind::None, None)
                     .context("Failed to generate app keys")
             }
-            KeyProviderKind::Tpm => self.generate_tpm_app_keys(),
+            KeyProviderKind::Tpm => {
+                info!("Generating app keys from TPM");
+                self.generate_tpm_app_keys(app_compose_hash)
+            }
         }
     }
 
@@ -1379,7 +1211,7 @@ impl<'a> Stage0<'a> {
         self.vmm
             .notify_q("boot.progress", "requesting app keys")
             .await;
-        let app_keys = self.request_app_keys().await?;
+        let app_keys = self.request_app_keys(&app_info.compose_hash).await?;
         if app_keys.disk_crypt_key.is_empty() {
             bail!("Failed to get valid key phrase from KMS");
         }
