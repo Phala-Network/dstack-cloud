@@ -33,6 +33,7 @@ This is the main configuration file for the application in JSON format:
 | kms_enabled | 0.3.1 | boolean | Enable/disable KMS |
 | gateway_enabled | 0.3.1 | boolean | Enable/disable gateway |
 | local_key_provider_enabled | 0.3.1 | boolean | Use a local key provider |
+| key_provider_id | 0.5.1 | string | Key provider ID. |
 | public_logs | 0.3.3 | boolean | Whether logs are publicly visible |
 | public_sysinfo | 0.3.3 | boolean | Whether system info is public |
 | public_tcbinfo | 0.5.1 | boolean | Whether TCB info is public |
@@ -43,6 +44,7 @@ This is the main configuration file for the application in JSON format:
 | init_script | 0.5.5 | string | Bash script that executed prior to dockerd startup |
 | storage_fs | 0.5.5 | string | Filesystem type for the data disk of the CVM. Supported values: "zfs", "ext4". default to "zfs". **ZFS:** Ensures filesystem integrity with built-in data protection features. **ext4:** Provides better performance for database applications with lower overhead and faster I/O operations, but no strong integrity protection. |
 | swap_size | 0.5.5 | string/integer | The linux swap size. default to 0. Can be in byte or human-readable format (e.g., "1G", "256M"). |
+| key_provider | 0.5.6 | string | Key provider type. Supported values: "none", "kms", "local", "tpm". |
 
 
 The hash of this file content is extended to RTMR3 as event name `compose-hash`. Remote verifier can extract the compose-hash during remote attestation.

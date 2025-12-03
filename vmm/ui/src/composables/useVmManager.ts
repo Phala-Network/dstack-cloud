@@ -718,6 +718,14 @@ type CreateVmPayloadSource = {
 
     if (vmForm.value.key_provider !== undefined) {
       appCompose.key_provider = vmForm.value.key_provider;
+
+      // For backward compatibility
+      if (vmForm.value.key_provider === 'kms') {
+        appCompose.kms_enabled = true;
+      }
+      if (vmForm.value.key_provider === 'local') {
+        appCompose.local_key_provider_enabled = true;
+      }
     }
 
     if (vmForm.value.storage_fs) {

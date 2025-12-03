@@ -106,7 +106,7 @@ impl AppCompose {
     }
 
     pub fn kms_enabled(&self) -> bool {
-        self.kms_enabled || self.feature_enabled("kms")
+        self.key_provider().is_kms()
     }
 
     pub fn key_provider(&self) -> KeyProviderKind {
