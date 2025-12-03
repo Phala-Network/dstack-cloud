@@ -554,7 +554,7 @@ impl VmConfig {
             .arg(format!("vhost-vsock-pci,guest-cid={}", self.cid));
 
         // Configure shared files delivery: either via disk or 9p
-        match cfg.host_sharing_mode.as_str() {
+        match cfg.host_share_mode.as_str() {
             "9p" => {
                 // Use 9p virtfs (default)
                 let ro = if self.image.info.shared_ro {
@@ -578,7 +578,7 @@ impl VmConfig {
                     .arg("-device")
                     .arg("virtio-blk-pci,drive=vvfat0");
             }
-            "vdisk" => {
+            "vhd" => {
                 // Use a second virtual disk (hd2) to share files
                 let shared_disk_path = workdir.shared_disk_path();
                 if shared_disk_path.exists() {
@@ -596,7 +596,7 @@ impl VmConfig {
                     .arg("virtio-blk-pci,drive=hd2");
             }
             _ => {
-                bail!("Invalid host sharing mode: {}", cfg.host_sharing_mode);
+                bail!("Invalid host sharing mode: {}", cfg.host_share_mode);
             }
         }
 

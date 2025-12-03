@@ -167,7 +167,7 @@ pub struct VmConfig {
     /// If true, shared files are provided via a second virtual disk (hd2)
     /// If false (default), shared files are provided via 9p virtfs
     #[serde(default)]
-    pub shared_disk_mode: bool,
+    pub host_share_mode: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -572,7 +572,7 @@ fn cmd_vtpm_attest(args: VtpmAttestArgs) -> Result<()> {
             println!("[2/7] downloading intermediate CA...");
         }
         let ica_url_output = std::process::Command::new("openssl")
-            .args(&["x509", "-in", "/tmp/ek_cert.pem", "-noout", "-text"])
+            .args(["x509", "-in", "/tmp/ek_cert.pem", "-noout", "-text"])
             .output()
             .context("failed to read EK cert")?;
         let ica_text = String::from_utf8_lossy(&ica_url_output.stdout);
