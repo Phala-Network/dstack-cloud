@@ -43,8 +43,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Get TDX report given report data from stdin
-    Report,
     /// Generate a TDX quote given report data from stdin
     Quote,
     /// Get TDX event logs
@@ -233,7 +231,7 @@ fn cmd_quote() -> Result<()> {
     io::stdin()
         .read_exact(&mut report_data)
         .context("Failed to read report data")?;
-    let (_key_id, quote) = att::get_quote(&report_data, None).context("Failed to get quote")?;
+    let quote = att::get_quote(&report_data).context("Failed to get quote")?;
     io::stdout()
         .write_all(&quote)
         .context("Failed to write quote")?;
@@ -250,18 +248,6 @@ fn cmd_eventlog() -> Result<()> {
 fn cmd_extend(extend_args: ExtendArgs) -> Result<()> {
     let payload = hex::decode(&extend_args.payload).context("Failed to decode payload")?;
     att::extend_rtmr3(&extend_args.event, &payload).context("Failed to extend RTMR")
-}
-
-fn cmd_report() -> Result<()> {
-    let mut report_data = [0; 64];
-    io::stdin()
-        .read_exact(&mut report_data)
-        .context("Failed to read report data")?;
-    let report = att::get_report(&report_data).context("Failed to get report")?;
-    io::stdout()
-        .write_all(&report.0)
-        .context("Failed to write report")?;
-    Ok(())
 }
 
 fn cmd_rand(rand_args: RandArgs) -> Result<()> {
@@ -411,7 +397,7 @@ fn cmd_gen_ca_cert(args: GenCaCertArgs) -> Result<()> {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
     let pubkey = key.public_key_der();
     let report_data = QuoteContentType::KmsRootCa.to_report_data(&pubkey);
-    let (_, quote) = att::get_quote(&report_data, None).context("Failed to get quote")?;
+    let quote = att::get_quote(&report_data).context("Failed to get quote")?;
     let event_logs = att::eventlog::read_event_logs().context("Failed to read event logs")?;
     let event_log = serde_json::to_vec(&event_logs).context("Failed to serialize event logs")?;
 
@@ -484,7 +470,7 @@ fn make_app_keys(
     use ra_tls::cert::CertRequest;
     let pubkey = app_key.public_key_der();
     let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
-    let (_, quote) = att::get_quote(&report_data, None).context("Failed to get quote")?;
+    let quote = att::get_quote(&report_data).context("Failed to get quote")?;
     let event_logs = att::eventlog::read_event_logs().context("Failed to read event logs")?;
     let event_log = serde_json::to_vec(&event_logs).context("Failed to serialize event logs")?;
     let req = CertRequest::builder()
@@ -748,7 +734,6 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Report => cmd_report()?,
         Commands::Quote => cmd_quote()?,
         Commands::Eventlog => cmd_eventlog()?,
         Commands::Show => cmd_show_mrs()?,

@@ -281,8 +281,7 @@ impl DstackGuestRpc for InternalRpcHandler {
                 &self.state.inner.vm_config,
             );
         }
-        let (_, quote) =
-            tdx_attest::get_quote(&report_data, None).context("Failed to get quote")?;
+        let quote = tdx_attest::get_quote(&report_data).context("Failed to get quote")?;
         let event_log = read_event_logs().context("Failed to decode event log")?;
         let event_log =
             serde_json::to_string(&event_log).context("Failed to serialize event log")?;
@@ -498,8 +497,7 @@ impl TappdRpc for InternalRpcHandlerV0 {
         let event_log = read_event_logs().context("Failed to decode event log")?;
         let event_log =
             serde_json::to_string(&event_log).context("Failed to serialize event log")?;
-        let (_, quote) =
-            tdx_attest::get_quote(&report_data, None).context("Failed to get quote")?;
+        let quote = tdx_attest::get_quote(&report_data).context("Failed to get quote")?;
         Ok(TdxQuoteResponse {
             quote,
             event_log,
@@ -587,9 +585,8 @@ impl WorkerRpc for ExternalRpcHandler {
                         &self.state.inner.vm_config,
                     )?)
                 } else {
-                    let ed25519_quote = tdx_attest::get_quote(&ed25519_report_data, None)
-                        .context("Failed to get ed25519 quote")?
-                        .1;
+                    let ed25519_quote = tdx_attest::get_quote(&ed25519_report_data)
+                        .context("Failed to get ed25519 quote")?;
                     let event_log = serde_json::to_string(
                         &read_event_logs().context("Failed to read event log")?,
                     )?;
@@ -619,9 +616,8 @@ impl WorkerRpc for ExternalRpcHandler {
                         &self.state.inner.vm_config,
                     )?)
                 } else {
-                    let secp256k1_quote = tdx_attest::get_quote(&secp256k1_report_data, None)
-                        .context("Failed to get secp256k1 quote")?
-                        .1;
+                    let secp256k1_quote = tdx_attest::get_quote(&secp256k1_report_data)
+                        .context("Failed to get secp256k1 quote")?;
                     let event_log = serde_json::to_string(
                         &read_event_logs().context("Failed to read event log")?,
                     )?;

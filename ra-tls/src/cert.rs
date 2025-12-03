@@ -380,7 +380,7 @@ pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertP
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
     let pubkey = key.public_key_der();
     let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
-    let (_, quote) = get_quote(&report_data, None).context("Failed to get quote")?;
+    let quote = get_quote(&report_data).context("Failed to get quote")?;
     let event_logs = read_runtime_event_logs().context("Failed to read event logs")?;
 
     let event_log = serde_json::to_vec(&event_logs).context("Failed to serialize RTMR3 events")?;

@@ -103,7 +103,7 @@ impl CertRequestClient {
         let pubkey = key.public_key_der();
         let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
         let (quote, event_log) = if !no_ra {
-            let (_, quote) = get_quote(&report_data, None).context("Failed to get quote")?;
+            let quote = get_quote(&report_data).context("Failed to get quote")?;
             let event_logs = read_runtime_event_logs().context("Failed to decode event log")?;
             let event_log =
                 serde_json::to_vec(&event_logs).context("Failed to serialize RTMR3 events")?;
