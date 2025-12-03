@@ -39,7 +39,6 @@ use crate::{
     crypto::dh_decrypt,
     gen_app_keys_from_seed,
     host_api::HostApi,
-    tpm::{self, TpmContext},
     utils::{
         deserialize_json_file, sha256, sha256_file, AppCompose, AppKeys, KeyProviderKind, SysConfig,
     },
@@ -49,6 +48,7 @@ use cmd_lib::run_fun as cmd;
 use dstack_gateway_rpc::{
     gateway_client::GatewayClient, RegisterCvmRequest, RegisterCvmResponse, WireGuardPeer,
 };
+use dstack_tpm::{self as tpm, TpmContext};
 use ra_tls::{
     cert::CertConfig,
     rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256},

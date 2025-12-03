@@ -30,7 +30,6 @@ mod docker_compose;
 mod host_api;
 mod parse_env_file;
 mod system_setup;
-mod tpm;
 mod utils;
 
 /// dstack guest utility
