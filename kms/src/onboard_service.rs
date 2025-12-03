@@ -304,7 +304,10 @@ fn dstack_client() -> DstackGuestClient<PrpcClient> {
 
 async fn app_quote(report_data: Vec<u8>) -> Result<GetQuoteResponse> {
     let quote = dstack_client()
-        .get_quote(RawQuoteArgs { report_data })
+        .get_quote(RawQuoteArgs {
+            report_data,
+            quote_type: String::new(),
+        })
         .await?;
     Ok(quote)
 }

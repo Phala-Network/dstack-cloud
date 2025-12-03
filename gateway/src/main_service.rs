@@ -816,7 +816,10 @@ async fn get_or_generate_quote(
     }
     let report_data = content_type.to_report_data(payload).to_vec();
     let response = agent
-        .get_quote(RawQuoteArgs { report_data })
+        .get_quote(RawQuoteArgs {
+            report_data,
+            quote_type: String::new(),
+        })
         .await
         .context("Failed to get quote")?;
     let quote = serde_json::to_string(&response).context("Failed to serialize quote")?;

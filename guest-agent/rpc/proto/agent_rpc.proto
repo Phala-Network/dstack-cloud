@@ -154,6 +154,8 @@ message TdxQuoteArgs {
 message RawQuoteArgs {
   // 64 bytes of report data
   bytes report_data = 1;
+  // Quote type: "tdx" (default) or "tpm"
+  string quote_type = 2;
 }
 
 message TdxQuoteResponse {

@@ -139,6 +139,7 @@ pub async fn get_info(state: &AppState, external: bool) -> Result<AppInfo> {
     }
     .get_quote(RawQuoteArgs {
         report_data: [0; 64].to_vec(),
+        quote_type: String::new(),
     })
     .await;
     let Ok(response) = response else {
@@ -274,6 +275,12 @@ impl DstackGuestRpc for InternalRpcHandler {
             Some(padded)
         }
         let report_data = pad64(&request.report_data).context("Report data is too long")?;
+        let quote_type = if request.quote_type.is_empty() {
+            "tdx"
+        } else {
+            request.quote_type.as_str()
+        };
+
         if self.state.config().simulator.enabled {
             return simulate_quote(
                 self.state.config(),
@@ -281,17 +288,43 @@ impl DstackGuestRpc for InternalRpcHandler {
                 &self.state.inner.vm_config,
             );
         }
-        let quote = tdx_attest::get_quote(&report_data).context("Failed to get quote")?;
-        let event_log = read_event_logs().context("Failed to decode event log")?;
-        let event_log =
-            serde_json::to_string(&event_log).context("Failed to serialize event log")?;
 
-        Ok(GetQuoteResponse {
-            quote,
-            event_log,
-            report_data: report_data.to_vec(),
-            vm_config: self.state.inner.vm_config.clone(),
-        })
+        match quote_type {
+            "tdx" => {
+                let quote =
+                    tdx_attest::get_quote(&report_data).context("Failed to get TDX quote")?;
+                let event_log = read_event_logs().context("Failed to decode event log")?;
+                let event_log =
+                    serde_json::to_string(&event_log).context("Failed to serialize event log")?;
+
+                Ok(GetQuoteResponse {
+                    quote,
+                    event_log,
+                    report_data: report_data.to_vec(),
+                    vm_config: self.state.inner.vm_config.clone(),
+                })
+            }
+            "tpm" => {
+                let tpm =
+                    dstack_tpm::TpmContext::open(None).context("Failed to open TPM context")?;
+                let pcr_selection = dstack_tpm::default_pcr_policy();
+                let tpm_quote = tpm
+                    .create_quote(&report_data, &pcr_selection)
+                    .context("Failed to create TPM quote")?;
+
+                // Serialize TPM quote to JSON for structured verification
+                let quote =
+                    serde_json::to_vec(&tpm_quote).context("Failed to serialize TPM quote")?;
+
+                Ok(GetQuoteResponse {
+                    quote,
+                    event_log: String::new(),
+                    report_data: report_data.to_vec(),
+                    vm_config: self.state.inner.vm_config.clone(),
+                })
+            }
+            _ => Err(anyhow::anyhow!("Unsupported quote type: {}", quote_type)),
+        }
     }
 
     async fn emit_event(self, request: EmitEventArgs) -> Result<()> {

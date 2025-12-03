@@ -2208,6 +2208,7 @@ dependencies = [
  "cmd_lib",
  "default-net",
  "dstack-guest-agent-rpc",
+ "dstack-tpm",
  "dstack-types",
  "ed25519-dalek",
  "figment",
@@ -2385,6 +2386,9 @@ version = "0.5.5"
 dependencies = [
  "anyhow",
  "hex",
+ "serde",
+ "serde-human-bytes",
+ "serde_json",
  "tempfile",
  "tracing",
 ]

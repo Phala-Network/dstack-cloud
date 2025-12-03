@@ -16,6 +16,8 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_human_bytes as hex_bytes;
 use tempfile::TempDir;
 use tracing::{info, warn};
 
@@ -29,6 +31,39 @@ pub const APP_PCR: u32 = 14;
 /// Default PCR selection for dstack (boot chain PCR 0-9 + app PCR 15)
 pub fn default_pcr_policy() -> PcrSelection {
     PcrSelection::sha256(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, APP_PCR])
+}
+
+/// Structured TPM quote containing all verification materials
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TpmQuote {
+    /// TPM quote message (TPMS_ATTEST structure)
+    #[serde(with = "hex_bytes")]
+    pub message: Vec<u8>,
+    /// Quote signature by Attestation Key
+    #[serde(with = "hex_bytes")]
+    pub signature: Vec<u8>,
+    /// Attestation Key (AK) public key in TPM format
+    #[serde(with = "hex_bytes")]
+    pub ak_public: Vec<u8>,
+    /// PCR values at the time of quote generation
+    pub pcr_values: Vec<PcrValue>,
+    /// PCR selection used for the quote
+    pub pcr_selection: PcrSelection,
+    /// Qualifying data (nonce) used in the quote
+    #[serde(with = "hex_bytes")]
+    pub qualifying_data: Vec<u8>,
+}
+
+/// PCR value for a specific PCR register
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PcrValue {
+    /// PCR index
+    pub index: u32,
+    /// Hash algorithm (e.g., "sha256")
+    pub algorithm: String,
+    /// PCR value (hash)
+    #[serde(with = "hex_bytes")]
+    pub value: Vec<u8>,
 }
 
 /// TPM context for managing a connection to a TPM device
@@ -67,7 +102,7 @@ impl TpmOutput {
 }
 
 /// PCR (Platform Configuration Register) selection for policy binding
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcrSelection {
     pub bank: String,
     pub pcrs: Vec<u32>,
@@ -140,6 +175,14 @@ impl SealedBlob {
 }
 
 impl TpmContext {
+    /// Open a TPM context with optional TCTI string (auto-detect if None)
+    pub fn open(tcti: Option<&str>) -> Result<Self> {
+        match tcti {
+            Some(t) => Self::new(t),
+            None => Self::detect(),
+        }
+    }
+
     /// Detect and connect to an available TPM device
     pub fn detect() -> Result<Self> {
         let tcti = if Path::new("/dev/tpmrm0").exists() {
@@ -686,6 +729,131 @@ impl TpmContext {
                 .ok()
                 .context("unsealed data size mismatch")?,
         ))
+    }
+
+    // ==================== Quote Operations ====================
+
+    /// Read PCR values for the given selection
+    fn read_pcr_values(&self, pcr_selection: &PcrSelection) -> Result<Vec<PcrValue>> {
+        let work_dir = self.work_dir();
+        let pcr_output = work_dir.join("pcr_values.bin");
+        let pcr_output_str = pcr_output.to_string_lossy();
+        let sel_str = pcr_selection.to_arg();
+
+        let Some(output) = self.run_cmd("tpm2_pcrread", &["-o", &pcr_output_str, &sel_str])? else {
+            bail!("tpm2_pcrread not found");
+        };
+        if !output.success {
+            bail!("tpm2_pcrread failed: {}", output.stderr_string());
+        }
+
+        // Parse PCR values from binary output
+        let pcr_data = std::fs::read(&pcr_output)?;
+        let mut pcr_values = Vec::new();
+
+        // Each PCR value is 32 bytes for SHA256
+        let hash_size = 32;
+        for (i, pcr_idx) in pcr_selection.pcrs.iter().enumerate() {
+            let offset = i * hash_size;
+            if offset + hash_size <= pcr_data.len() {
+                let value = pcr_data[offset..offset + hash_size].to_vec();
+                pcr_values.push(PcrValue {
+                    index: *pcr_idx,
+                    algorithm: pcr_selection.bank.clone(),
+                    value,
+                });
+            }
+        }
+
+        Ok(pcr_values)
+    }
+
+    /// Generate a TPM quote with the given qualifying data and PCR selection
+    pub fn create_quote(
+        &self,
+        qualifying_data: &[u8],
+        pcr_selection: &PcrSelection,
+    ) -> Result<TpmQuote> {
+        let work_dir = self.work_dir();
+        let ak_ctx = work_dir.join("ak.ctx");
+        let ak_pub = work_dir.join("ak.pub");
+        let quote_msg = work_dir.join("quote.msg");
+        let quote_sig = work_dir.join("quote.sig");
+        let ak_ctx_str = ak_ctx.to_string_lossy();
+        let ak_pub_str = ak_pub.to_string_lossy();
+        let quote_msg_str = quote_msg.to_string_lossy();
+        let quote_sig_str = quote_sig.to_string_lossy();
+        let sel_str = pcr_selection.to_arg();
+
+        // Create Attestation Key (AK) as a child of primary key
+        let parent_handle = PRIMARY_KEY_HANDLE;
+        if !self.ensure_primary_key(parent_handle)? {
+            bail!("failed to ensure primary key");
+        }
+
+        let parent_str = format!("0x{:08x}", parent_handle);
+        let Some(output) = self.run_cmd(
+            "tpm2_createak",
+            &[
+                "-C",
+                &parent_str,
+                "-c",
+                &ak_ctx_str,
+                "-u",
+                &ak_pub_str,
+                "-G",
+                "rsa",
+                "-g",
+                "sha256",
+            ],
+        )?
+        else {
+            bail!("tpm2_createak not found");
+        };
+        if !output.success {
+            bail!("tpm2_createak failed: {}", output.stderr_string());
+        }
+
+        // Read PCR values before generating quote
+        let pcr_values = self.read_pcr_values(pcr_selection)?;
+
+        // Generate quote with qualifying data
+        let Some(output) = self.run_cmd_with_stdin(
+            "tpm2_quote",
+            &[
+                "-c",
+                &ak_ctx_str,
+                "-l",
+                &sel_str,
+                "-m",
+                &quote_msg_str,
+                "-s",
+                &quote_sig_str,
+                "-q",
+                "-",
+            ],
+            qualifying_data,
+        )?
+        else {
+            bail!("tpm2_quote not found");
+        };
+        if !output.success {
+            bail!("tpm2_quote failed: {}", output.stderr_string());
+        }
+
+        // Read all the quote materials
+        let message = std::fs::read(&quote_msg)?;
+        let signature = std::fs::read(&quote_sig)?;
+        let ak_public = std::fs::read(&ak_pub)?;
+
+        Ok(TpmQuote {
+            message,
+            signature,
+            ak_public,
+            pcr_values,
+            pcr_selection: pcr_selection.clone(),
+            qualifying_data: qualifying_data.to_vec(),
+        })
     }
 
     // ==================== EK (Endorsement Key) Operations ====================
