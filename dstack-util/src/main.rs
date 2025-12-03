@@ -18,8 +18,7 @@ use ra_tls::{
     rcgen::KeyPair,
 };
 use scale::Decode;
-use serde::Deserialize;
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 use std::{
     io::{self, Read, Write},
     path::PathBuf,
@@ -29,6 +28,7 @@ use tdx_attest as att;
 use utils::AppKeys;
 
 mod crypto;
+mod docker_compose;
 mod host_api;
 mod parse_env_file;
 mod system_setup;
@@ -221,15 +221,6 @@ struct VtpmAttestArgs {
     #[arg(long, default_value = "text")]
     format: String,
 }
-
-#[derive(Debug, Deserialize)]
-struct ComposeConfig {
-    name: Option<String>,
-    services: HashMap<String, ComposeService>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ComposeService {}
 
 fn cmd_quote() -> Result<()> {
     let mut report_data = [0; 64];
@@ -525,18 +516,6 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     sha256.finalize().into()
 }
 
-fn get_project_name(compose_file: impl AsRef<Path>) -> Result<String> {
-    let project_name = fs::canonicalize(compose_file)
-        .context("Failed to canonicalize compose file")?
-        .parent()
-        .context("Failed to get parent directory of compose file")?
-        .file_name()
-        .context("Failed to get file name of compose file")?
-        .to_string_lossy()
-        .into_owned();
-    Ok(project_name)
-}
-
 fn cmd_vtpm_attest(args: VtpmAttestArgs) -> Result<()> {
     use cmd_lib::run_cmd;
     use serde::Serialize;
@@ -757,17 +736,10 @@ async fn cmd_remove_orphans(compose_file: impl AsRef<Path>, dry_run: bool) -> Re
     let docker =
         Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
 
-    // Read and parse docker-compose.yaml to get project name
-    let compose_content =
-        fs::read_to_string(compose_file.as_ref()).context("Failed to read docker-compose.yaml")?;
-    let docker_compose: ComposeConfig =
-        serde_yaml2::from_str(&compose_content).context("Failed to parse docker-compose.yaml")?;
-
-    // Get current project name from compose file or directory name
-    let project_name = match docker_compose.name {
-        Some(name) => name,
-        None => get_project_name(compose_file)?,
-    };
+    // Parse compose file to extract project name and service names
+    let compose_info = docker_compose::parse_docker_compose_file(&compose_file)?;
+    let project_name = compose_info.project_name;
+    let service_names = compose_info.service_names;
 
     // List all containers
     let options = ListContainersOptions::<String> {
@@ -798,7 +770,7 @@ async fn cmd_remove_orphans(compose_file: impl AsRef<Path>, dry_run: bool) -> Re
         let Some(service_name) = labels.get("com.docker.compose.service") else {
             continue;
         };
-        if docker_compose.services.contains_key(service_name) {
+        if service_names.contains(service_name) {
             continue;
         }
         // Service no longer exists in compose file, remove the container
