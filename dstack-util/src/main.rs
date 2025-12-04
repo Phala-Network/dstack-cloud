@@ -72,6 +72,10 @@ enum Commands {
     RemoveOrphans(RemoveOrphansArgs),
     /// Perform vTPM attestation (for GCP TEE instances)
     VtpmAttest(VtpmAttestArgs),
+    /// Generate a TPM quote
+    TpmQuote(TpmQuoteArgs),
+    /// Verify a TPM quote
+    TpmVerify(TpmVerifyArgs),
 }
 
 #[derive(Parser)]
@@ -223,6 +227,30 @@ struct VtpmAttestArgs {
     /// output format (json or text, default: text)
     #[arg(long, default_value = "text")]
     format: String,
+}
+
+#[derive(Parser)]
+/// Generate a TPM quote
+struct TpmQuoteArgs {
+    /// qualifying data (hex encoded, default: 64 zeros)
+    #[arg(short, long)]
+    data: Option<String>,
+
+    /// output file (default: stdout)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+/// Verify a TPM quote
+struct TpmVerifyArgs {
+    /// path to Root CA certificate (PEM format)
+    #[arg(long)]
+    root_ca: PathBuf,
+
+    /// path to TPM quote JSON file
+    #[arg(short, long)]
+    quote: PathBuf,
 }
 
 fn cmd_quote() -> Result<()> {
@@ -722,6 +750,63 @@ fn cmd_vtpm_attest(args: VtpmAttestArgs) -> Result<()> {
     Ok(())
 }
 
+fn cmd_tpm_quote(args: TpmQuoteArgs) -> Result<()> {
+    let qualifying_data = if let Some(hex_data) = args.data {
+        let decoded = hex::decode(&hex_data).context("Failed to decode hex data")?;
+        if decoded.len() > 32 {
+            anyhow::bail!("Qualifying data must be at most 32 bytes");
+        }
+        decoded
+    } else {
+        vec![0u8; 32]  // TPM 2.0 max qualifying data is 32 bytes
+    };
+
+    let tpm = dstack_tpm::TpmContext::open(None).context("Failed to open TPM context")?;
+    let pcr_selection = dstack_tpm::default_pcr_policy();
+    let tpm_quote = tpm
+        .create_quote(&qualifying_data, &pcr_selection)
+        .context("Failed to create TPM quote")?;
+
+    let quote_json =
+        serde_json::to_string_pretty(&tpm_quote).context("Failed to serialize TPM quote")?;
+
+    if let Some(output_path) = args.output {
+        fs::write(&output_path, quote_json).context("Failed to write quote to file")?;
+        eprintln!("TPM quote written to: {:?}", output_path);
+    } else {
+        println!("{}", quote_json);
+    }
+
+    Ok(())
+}
+
+fn cmd_tpm_verify(args: TpmVerifyArgs) -> Result<()> {
+    let root_ca_pem = fs::read_to_string(&args.root_ca).context("Failed to read root CA")?;
+    let quote_json = fs::read_to_string(&args.quote).context("Failed to read quote file")?;
+    let tpm_quote: dstack_tpm::TpmQuote =
+        serde_json::from_str(&quote_json).context("Failed to parse quote JSON")?;
+
+    println!("=== TPM Quote Verification ===");
+    println!("Root CA: {:?}", args.root_ca);
+    println!("Quote file: {:?}", args.quote);
+    println!();
+
+    let result = dstack_tpm::verify_quote(&tpm_quote, &root_ca_pem)?;
+
+    println!("=== Verification Result ===");
+    println!("  EK Certificate Chain: {}", if result.ek_verified { "✓ VERIFIED" } else { "✗ FAILED" });
+    println!("  Quote Signature: {}", if result.signature_verified { "✓ VERIFIED" } else { "✗ FAILED" });
+    println!("  PCR Values: {}", if result.pcr_verified { "✓ VERIFIED" } else { "✗ FAILED" });
+    println!();
+
+    if result.success() {
+        println!("🎉 VERIFICATION PASSED");
+        Ok(())
+    } else {
+        anyhow::bail!("Verification failed");
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     {
@@ -777,6 +862,12 @@ async fn main() -> Result<()> {
         }
         Commands::VtpmAttest(args) => {
             cmd_vtpm_attest(args)?;
+        }
+        Commands::TpmQuote(args) => {
+            cmd_tpm_quote(args)?;
+        }
+        Commands::TpmVerify(args) => {
+            cmd_tpm_verify(args)?;
         }
     }
 

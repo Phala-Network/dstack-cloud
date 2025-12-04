@@ -785,18 +785,27 @@ impl TpmContext {
         let quote_sig_str = quote_sig.to_string_lossy();
         let sel_str = pcr_selection.to_arg();
 
-        // Create Attestation Key (AK) as a child of primary key
-        let parent_handle = PRIMARY_KEY_HANDLE;
-        if !self.ensure_primary_key(parent_handle)? {
-            bail!("failed to ensure primary key");
+        // Create Endorsement Key (EK) first
+        let ek_ctx = work_dir.join("ek.ctx");
+        let ek_ctx_str = ek_ctx.to_string_lossy();
+
+        let Some(output) = self.run_cmd(
+            "tpm2_createek",
+            &["-c", &ek_ctx_str, "-G", "rsa"],
+        )?
+        else {
+            bail!("tpm2_createek not found");
+        };
+        if !output.success {
+            bail!("tpm2_createek failed: {}", output.stderr_string());
         }
 
-        let parent_str = format!("0x{:08x}", parent_handle);
+        // Create Attestation Key (AK) as a child of EK
         let Some(output) = self.run_cmd(
             "tpm2_createak",
             &[
                 "-C",
-                &parent_str,
+                &ek_ctx_str,
                 "-c",
                 &ak_ctx_str,
                 "-u",
@@ -817,8 +826,13 @@ impl TpmContext {
         // Read PCR values before generating quote
         let pcr_values = self.read_pcr_values(pcr_selection)?;
 
+        // Write qualifying data to file
+        let qual_data_file = work_dir.join("qual_data.bin");
+        std::fs::write(&qual_data_file, qualifying_data)?;
+        let qual_data_str = qual_data_file.to_string_lossy();
+
         // Generate quote with qualifying data
-        let Some(output) = self.run_cmd_with_stdin(
+        let Some(output) = self.run_cmd(
             "tpm2_quote",
             &[
                 "-c",
@@ -830,9 +844,8 @@ impl TpmContext {
                 "-s",
                 &quote_sig_str,
                 "-q",
-                "-",
+                &qual_data_str,
             ],
-            qualifying_data,
         )?
         else {
             bail!("tpm2_quote not found");
@@ -902,6 +915,12 @@ mod tests {
     #[test]
     fn test_default_pcr_policy() {
         let policy = default_pcr_policy();
-        assert_eq!(policy.to_arg(), "sha256:0,1,2,3,4,5,6,7,8,9,15");
+        assert_eq!(policy.to_arg(), "sha256:0,1,2,3,4,5,6,7,8,9,14");
     }
 }
+
+
+// ==================== Pure Rust Verification ====================
+
+mod verify;
+pub use verify::{verify_quote, VerificationResult};
