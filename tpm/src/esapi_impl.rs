@@ -99,23 +99,84 @@ impl EsapiContext {
 
     /// Write data to an NV index
     pub fn nv_write(&mut self, _index: u32, _data: &[u8]) -> Result<bool> {
-        // TODO: Implement NV write with correct tss-esapi API
-        warn!("nv_write not yet implemented");
+        // TODO: Implement NV write with correct nv API
+        // Note: Not needed for quote generation (read-only operation)
+        warn!("nv_write not yet implemented - not needed for quote generation");
         Ok(false)
     }
 
     /// Define a new NV index
-    pub fn nv_define(&mut self, _index: u32, _size: usize, _owner_read_write: bool) -> Result<bool> {
-        // TODO: Implement NV define with correct tss-esapi API
-        warn!("nv_define not yet implemented");
-        Ok(false)
+    pub fn nv_define(&mut self, index: u32, size: usize, owner_read_write: bool) -> Result<bool> {
+        use tss_esapi::attributes::NvIndexAttributesBuilder;
+        use tss_esapi::structures::{NvPublicBuilder, Auth};
+        use tss_esapi::interface_types::resource_handles::Provision;
+
+        let handle = NvIndexTpmHandle::new(index)
+            .context("invalid NV index")?;
+
+        // Build NV index attributes
+        let mut attributes = NvIndexAttributesBuilder::new();
+        if owner_read_write {
+            attributes = attributes
+                .with_owner_write(true)
+                .with_owner_read(true);
+        }
+        let attributes = attributes.build().context("failed to build NV attributes")?;
+
+        // Build NV public structure
+        let nv_public = NvPublicBuilder::new()
+            .with_nv_index(handle)
+            .with_index_name_algorithm(HashingAlgorithm::Sha256)
+            .with_index_attributes(attributes)
+            .with_data_area_size(size)
+            .build()
+            .context("failed to build NV public")?;
+
+        // Define NV space
+        match self.context.execute_with_nullauth_session(|ctx| {
+            ctx.nv_define_space(Provision::Owner, None, nv_public)
+        }) {
+            Ok(_) => {
+                info!("defined NV index 0x{:08x} with size {}", index, size);
+                Ok(true)
+            }
+            Err(e) => {
+                warn!("nv_define failed for index 0x{:08x}: {}", index, e);
+                Ok(false)
+            }
+        }
     }
 
     /// Undefine (delete) an NV index
-    pub fn nv_undefine(&mut self, _index: u32) -> Result<bool> {
-        // TODO: Implement NV undefine with correct tss-esapi API
-        warn!("nv_undefine not yet implemented");
-        Ok(false)
+    pub fn nv_undefine(&mut self, index: u32) -> Result<bool> {
+        use tss_esapi::handles::NvIndexHandle;
+        use tss_esapi::interface_types::resource_handles::Provision;
+
+        let handle = NvIndexTpmHandle::new(index)
+            .context("invalid NV index")?;
+
+        // Get NV index handle
+        let nv_idx = match self.context.tr_from_tpm_public(TpmHandle::NvIndex(handle)) {
+            Ok(h) => NvIndexHandle::from(h),
+            Err(e) => {
+                warn!("failed to get NV index handle for 0x{:08x}: {}", index, e);
+                return Ok(false);
+            }
+        };
+
+        // Undefine NV space
+        match self.context.execute_with_nullauth_session(|ctx| {
+            ctx.nv_undefine_space(Provision::Owner, nv_idx)
+        }) {
+            Ok(_) => {
+                info!("undefined NV index 0x{:08x}", index);
+                Ok(true)
+            }
+            Err(e) => {
+                warn!("nv_undefine failed for index 0x{:08x}: {}", index, e);
+                Ok(false)
+            }
+        }
     }
 
     // ==================== PCR Operations ====================
@@ -161,10 +222,9 @@ impl EsapiContext {
 
     /// Extend a PCR with a hash value
     pub fn pcr_extend(&mut self, _pcr: u32, _hash: &[u8], _bank: &str) -> Result<()> {
-        // TODO: implement pcr_extend via tss-esapi
-        // This requires getting the PCR handle and calling extend
-        warn!("pcr_extend not yet implemented via tss-esapi");
-        bail!("pcr_extend not yet implemented");
+        // TODO: Implement PCR extend with correct PcrHandle API
+        // Note: PCR extend is not needed for quote generation (read-only operation)
+        bail!("pcr_extend not yet implemented - not needed for quote generation")
     }
 
     // ==================== Random Number Generation ====================
@@ -199,8 +259,9 @@ impl EsapiContext {
 
     /// Create a primary key in the owner hierarchy
     pub fn create_primary(&mut self) -> Result<tss_esapi::handles::KeyHandle> {
-        // TODO: Implement create_primary with correct tss-esapi API
-        bail!("create_primary not yet implemented")
+        // TODO: Implement create_primary with correct DecodedKey API
+        // Note: Not needed for quote generation (uses pre-provisioned GCP AK)
+        bail!("create_primary not yet implemented - not needed for quote generation")
     }
 
     /// Make a key persistent at a given handle
@@ -209,7 +270,8 @@ impl EsapiContext {
         _transient_handle: tss_esapi::handles::KeyHandle,
         _persistent_handle: u32,
     ) -> Result<bool> {
-        // TODO: Implement evict_control with correct tss-esapi API
+        // TODO: Implement evict_control with correct Provision API
+        // Note: Not needed for quote generation
         warn!("evict_control not yet implemented");
         Ok(false)
     }
