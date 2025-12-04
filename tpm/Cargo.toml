@@ -27,16 +27,19 @@ nom = "7.1"
 base64 = "0.22"
 
 # TPM 2.0 TSS ESAPI for low-level TPM operations
-tss-esapi = { version = "7.5", optional = true }
+tss-esapi = "7.5"
 
 # Certificate chain verification
-webpki = { version = "0.102", package = "rustls-webpki", features = ["alloc", "ring"], default-features = false }
+rustls-webpki = { version = "0.103.8", features = ["alloc", "ring"] }
+rustls-pki-types = "1.13.1"
 dcap-qvl-webpki = { version = "0.103", features = ["alloc", "ring"] }
 pem = "3.0"
-reqwest = { version = "0.12", features = ["rustls-tls", "blocking"], optional = true }
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+    "blocking",
+], optional = true }
 
 
 [features]
-default = ["gcp-vtpm"]  # Use tss-esapi by default
+default = ["crl-download"]
 crl-download = ["reqwest"]
-gcp-vtpm = ["tss-esapi"]  # TPM operations via tss-esapi (GCP vTPM and general TPM support)

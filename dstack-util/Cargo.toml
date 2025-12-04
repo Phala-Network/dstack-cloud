@@ -35,7 +35,7 @@ ra-rpc = { workspace = true, features = ["client"] }
 ra-tls.workspace = true
 dstack-gateway-rpc.workspace = true
 tdx-attest.workspace = true
-dstack-tpm = { workspace = true, features = ["crl-download", "gcp-vtpm"] }
+dstack-tpm = { workspace = true, features = ["crl-download"] }
 host-api = { workspace = true, features = ["client"] }
 cmd_lib.workspace = true
 toml.workspace = true

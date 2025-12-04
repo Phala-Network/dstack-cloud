@@ -8,7 +8,7 @@
 //! tss-esapi library (TPM2 Software Stack Enhanced System API).
 //! It handles PCR operations, sealing, unsealing, NV storage, and attestation.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_human_bytes as hex_bytes;
 use std::path::Path;
@@ -292,35 +292,76 @@ impl TpmContext {
     /// Seal data and store in NV storage
     pub fn seal(
         &self,
-        _data: &[u8],
-        _nv_index: u32,
-        _parent_handle: u32,
-        _pcr_selection: &PcrSelection,
+        data: &[u8],
+        nv_index: u32,
+        parent_handle: u32,
+        pcr_selection: &PcrSelection,
     ) -> Result<()> {
-        // TODO: Implement sealing with tss-esapi
-        bail!("sealing not yet implemented with tss-esapi")
+        let mut ctx = self.create_esapi_context()?;
+
+        // Ensure parent key exists
+        ctx.ensure_primary_key(parent_handle)?;
+
+        // Seal data
+        let (pub_bytes, priv_bytes) = ctx.seal(data, parent_handle, pcr_selection)?;
+
+        // Create sealed blob: pub_size (2 bytes) + pub + priv_size (2 bytes) + priv
+        let sealed_blob = SealedBlob::from_parts(&pub_bytes, &priv_bytes);
+
+        // Define NV space if not exists
+        if !ctx.nv_exists(nv_index)? {
+            ctx.nv_define(nv_index, sealed_blob.data.len(), true)?;
+        }
+
+        // Write sealed blob to NV
+        ctx.nv_write(nv_index, &sealed_blob.data)?;
+
+        info!("sealed data to NV index 0x{:08x}", nv_index);
+        Ok(())
     }
 
     /// Read and unseal data from NV storage
     pub fn unseal_to_vec(
         &self,
-        _nv_index: u32,
-        _parent_handle: u32,
-        _pcr_selection: &PcrSelection,
+        nv_index: u32,
+        parent_handle: u32,
+        pcr_selection: &PcrSelection,
     ) -> Result<Option<Vec<u8>>> {
-        // TODO: Implement unsealing with tss-esapi
-        bail!("unsealing not yet implemented with tss-esapi")
+        let mut ctx = self.create_esapi_context()?;
+
+        // Read sealed blob from NV
+        let sealed_data = match ctx.nv_read(nv_index)? {
+            Some(data) => data,
+            None => return Ok(None),
+        };
+
+        // Split sealed blob
+        let sealed_blob = SealedBlob::new(sealed_data);
+        let (pub_bytes, priv_bytes) = sealed_blob.split()?;
+
+        // Unseal data
+        let data = ctx.unseal(&pub_bytes, &priv_bytes, parent_handle, pcr_selection)?;
+
+        info!("unsealed data from NV index 0x{:08x}", nv_index);
+        Ok(Some(data))
     }
 
     /// Read and unseal fixed-size data from NV storage
     pub fn unseal<const N: usize>(
         &self,
-        _nv_index: u32,
-        _parent_handle: u32,
-        _pcr_selection: &PcrSelection,
+        nv_index: u32,
+        parent_handle: u32,
+        pcr_selection: &PcrSelection,
     ) -> Result<Option<[u8; N]>> {
-        // TODO: Implement unsealing with tss-esapi
-        bail!("unsealing not yet implemented with tss-esapi")
+        match self.unseal_to_vec(nv_index, parent_handle, pcr_selection)? {
+            Some(data) => {
+                let array: [u8; N] = data
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("unsealed data size mismatch: expected {}", N))?;
+                Ok(Some(array))
+            }
+            None => Ok(None),
+        }
     }
 
     // ==================== Quote Operations ====================
@@ -405,6 +446,69 @@ mod tests {
     fn test_default_pcr_policy() {
         let policy = default_pcr_policy();
         assert_eq!(policy.to_arg(), "sha256:0,1,2,3,4,5,6,7,8,9,14");
+    }
+
+    /// Test that our nom parser produces the same result as tss-esapi's UnMarshall
+    ///
+    /// This test validates the correctness of our manual nom-based TPMS_ATTEST parser
+    /// by comparing its output with tss-esapi's built-in unmarshaller.
+    ///
+    /// We use this approach to:
+    /// 1. Keep verify.rs independent of C libraries (no libtss2-mu dependency)
+    /// 2. Ensure our parser is correct by validating against the official implementation
+    ///
+    /// The test uses a real TPMS_ATTEST message captured from a GCP vTPM quote.
+    #[test]
+    fn test_nom_parser_matches_tss_esapi() {
+        use tss_esapi::{structures::Attest, traits::UnMarshall};
+
+        // Real TPMS_ATTEST message from a TPM2_Quote() call on GCP vTPM
+        // Generated with: tpm2_quote -c ak.ctx -l sha256:0,1,2 -q 12345678 -g sha256
+        let attest_bytes = include_bytes!("../tests/tpm_quote_sample.bin");
+
+        // Parse with tss-esapi (C library unmarshaller)
+        let esapi_attest = Attest::unmarshall(attest_bytes)
+            .expect("tss-esapi unmarshall failed");
+
+        // Parse with our nom parser
+        let nom_attest = crate::verify::parse_tpms_attest_for_test(attest_bytes)
+            .expect("nom parser failed");
+
+        // Verify magic number matches
+        assert_eq!(nom_attest.magic, 0xff544347, "magic number mismatch");
+
+        // Verify attestation type matches (Quote = 0x8018)
+        assert_eq!(nom_attest.type_, 0x8018, "attestation type mismatch");
+
+        // Verify extra_data (qualifying data) matches
+        let esapi_extra_data = esapi_attest.extra_data().value();
+        assert_eq!(
+            nom_attest.extra_data, esapi_extra_data,
+            "extra_data mismatch"
+        );
+
+        // Verify firmware version matches
+        assert_eq!(
+            nom_attest.firmware_version,
+            esapi_attest.firmware_version(),
+            "firmware_version mismatch"
+        );
+
+        // Extract QuoteInfo from esapi
+        let esapi_quote_info = match esapi_attest.attested() {
+            tss_esapi::structures::AttestInfo::Quote { info } => info,
+            _ => panic!("expected Quote attestation type"),
+        };
+
+        // Verify PCR digest matches
+        let esapi_pcr_digest = esapi_quote_info.pcr_digest().value();
+        assert_eq!(
+            nom_attest.attested_quote_info.pcr_digest, esapi_pcr_digest,
+            "PCR digest mismatch"
+        );
+
+        // Success! Our nom parser produces the same result as tss-esapi
+        println!("✓ nom parser matches tss-esapi UnMarshall");
     }
 }
 

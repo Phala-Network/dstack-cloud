@@ -14,6 +14,9 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 use x509_parser::{extensions::DistributionPointName, prelude::*};
 
+use rustls_pki_types::{CertificateDer, UnixTime};
+use webpki::{BorrowedCertRevocationList, CertRevocationList, EndEntityCert};
+
 use crate::{PcrValue, TpmQuote};
 
 /// Result of TPM quote verification
@@ -95,8 +98,14 @@ pub fn verify_quote(
     result.qualifying_data_verified = true;
 
     // Step 3: Verify PCR selection matches TPMS_ATTEST
-    debug!("parsing PCR selection from TPMS_ATTEST ({} bytes)", attest.attested_quote_info.pcr_select.len());
-    debug!("pcr_select hex: {}", hex::encode(&attest.attested_quote_info.pcr_select));
+    debug!(
+        "parsing PCR selection from TPMS_ATTEST ({} bytes)",
+        attest.attested_quote_info.pcr_select.len()
+    );
+    debug!(
+        "pcr_select hex: {}",
+        hex::encode(&attest.attested_quote_info.pcr_select)
+    );
     let attested_pcr_indices = parse_pcr_selection(&attest.attested_quote_info.pcr_select)?;
     let provided_pcr_indices: Vec<u32> = quote.pcr_values.iter().map(|p| p.index).collect();
 
@@ -123,7 +132,10 @@ pub fn verify_quote(
             key
         }
         Err(e) => {
-            result.error_message = Some(format!("failed to extract AK public key from certificate: {}", e));
+            result.error_message = Some(format!(
+                "failed to extract AK public key from certificate: {}",
+                e
+            ));
             return Ok(result);
         }
     };
@@ -137,7 +149,10 @@ pub fn verify_quote(
             // DON'T return here - continue to check certificate chain
         }
         Err(e) => {
-            warn!("signature verification error: {}, continuing to certificate chain verification", e);
+            warn!(
+                "signature verification error: {}, continuing to certificate chain verification",
+                e
+            );
             result.error_message = Some(format!("signature verification error: {e}"));
             // DON'T return here - continue to check certificate chain
         }
@@ -221,10 +236,11 @@ pub fn get_collateral(quote: &TpmQuote, root_ca_pem: &str) -> Result<crate::Quot
     }
     let root_ca_der = root_ca_certs[0].as_ref();
 
-    let mut all_crl_urls = vec![];
-    all_crl_urls.push(("root", extract_crl_urls(root_ca_der)?));
-    all_crl_urls.push(("intermediate", extract_crl_urls(&intermediate_ca_der)?));
-    all_crl_urls.push(("ak", extract_crl_urls(ak_cert_der)?));
+    let all_crl_urls = vec![
+        ("root", extract_crl_urls(root_ca_der)?),
+        ("intermediate", extract_crl_urls(&intermediate_ca_der)?),
+        ("ak", extract_crl_urls(ak_cert_der)?),
+    ];
 
     // Step 5: Download all CRLs in chain order
     // CRL verification is conditional: only verify if CRL DP is present
@@ -262,31 +278,28 @@ pub fn get_collateral(quote: &TpmQuote, root_ca_pem: &str) -> Result<crate::Quot
 
 /// TPMS_ATTEST structure parsed
 #[derive(Debug)]
-#[allow(dead_code)]
-struct TpmsAttest {
-    magic: u32,
-    type_: u16,
-    qualified_signer: Vec<u8>,
-    extra_data: Vec<u8>,
-    clock_info: ClockInfo,
-    firmware_version: u64,
-    attested_quote_info: QuoteInfo,
+pub(crate) struct TpmsAttest {
+    pub magic: u32,
+    pub type_: u16,
+    pub qualified_signer: Vec<u8>,
+    pub extra_data: Vec<u8>,
+    pub clock_info: ClockInfo,
+    pub firmware_version: u64,
+    pub attested_quote_info: QuoteInfo,
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
-struct ClockInfo {
-    clock: u64,
-    reset_count: u32,
-    restart_count: u32,
-    safe: u8,
+pub(crate) struct ClockInfo {
+    pub clock: u64,
+    pub reset_count: u32,
+    pub restart_count: u32,
+    pub safe: u8,
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
-struct QuoteInfo {
-    pcr_select: Vec<u8>,
-    pcr_digest: Vec<u8>,
+pub(crate) struct QuoteInfo {
+    pub pcr_select: Vec<u8>,
+    pub pcr_digest: Vec<u8>,
 }
 
 /// Parse TPMS_ATTEST structure (TPM 2.0 Part 2, Section 10.12.8)
@@ -390,7 +403,7 @@ fn parse_tpms_attest(data: &[u8]) -> Result<TpmsAttest> {
 /// Returns sorted list of PCR indices
 fn parse_pcr_selection(data: &[u8]) -> Result<Vec<u32>> {
     use nom::bytes::complete::take;
-    use nom::number::complete::{be_u32, be_u16, be_u8};
+    use nom::number::complete::{be_u16, be_u32, be_u8};
     use nom::IResult;
 
     fn parse_selection(input: &[u8]) -> IResult<&[u8], Vec<u32>> {
@@ -420,8 +433,8 @@ fn parse_pcr_selection(data: &[u8]) -> Result<Vec<u32>> {
         Ok((current_input, all_pcrs))
     }
 
-    let (_, mut pcr_indices) = parse_selection(data)
-        .map_err(|e| anyhow::anyhow!("failed to parse PCR selection: {e}"))?;
+    let (_, mut pcr_indices) =
+        parse_selection(data).map_err(|e| anyhow::anyhow!("failed to parse PCR selection: {e}"))?;
 
     // Sort PCR indices for comparison
     pcr_indices.sort_unstable();
@@ -450,8 +463,8 @@ fn compute_pcr_digest(pcr_values: &[PcrValue]) -> Result<Vec<u8>> {
 /// RSA public key extracted from the certificate
 fn extract_ak_public_key_from_cert(ak_cert_der: &[u8]) -> Result<RsaPublicKey> {
     // Parse X.509 certificate
-    let (_, cert) = X509Certificate::from_der(ak_cert_der)
-        .context("failed to parse AK certificate")?;
+    let (_, cert) =
+        X509Certificate::from_der(ak_cert_der).context("failed to parse AK certificate")?;
 
     // Extract SubjectPublicKeyInfo
     let spki = cert.public_key();
@@ -464,7 +477,10 @@ fn extract_ak_public_key_from_cert(ak_cert_der: &[u8]) -> Result<RsaPublicKey> {
     let public_key = RsaPublicKey::from_pkcs1_der(spki.subject_public_key.data.as_ref())
         .context("failed to decode RSA public key from certificate")?;
 
-    info!("extracted AK public key from certificate ({} bits)", public_key.size() * 8);
+    info!(
+        "extracted AK public key from certificate ({} bits)",
+        public_key.size() * 8
+    );
 
     Ok(public_key)
 }
@@ -473,7 +489,11 @@ fn extract_ak_public_key_from_cert(ak_cert_der: &[u8]) -> Result<RsaPublicKey> {
 ///
 /// This function verifies the signature of the TPMS_ATTEST message using the provided
 /// RSA public key (extracted from AK certificate).
-fn verify_signature_with_key(message: &[u8], signature: &[u8], public_key: &RsaPublicKey) -> Result<bool> {
+fn verify_signature_with_key(
+    message: &[u8],
+    signature: &[u8],
+    public_key: &RsaPublicKey,
+) -> Result<bool> {
     // Parse TPMT_SIGNATURE structure first to extract actual signature bytes
     // quote.sig is not a raw signature, but TPMT_SIGNATURE structure:
     // +0: sigAlg (2 bytes) - signature algorithm (0x0014 = TPM_ALG_RSASSA)
@@ -511,15 +531,23 @@ fn verify_signature_with_key(message: &[u8], signature: &[u8], public_key: &RsaP
     // TPM2 RSASSA signatures use standard PKCS#1 v1.5 padding with hash
     // Reference: TPM 2.0 Library Spec Part 1, Section 18.2.3.6 (RSASSA)
 
-    info!("message ({} bytes): {}", message.len(), hex::encode(message));
-    info!("signature ({} bytes): {}", actual_signature.len(), hex::encode(actual_signature));
+    info!(
+        "message ({} bytes): {}",
+        message.len(),
+        hex::encode(message)
+    );
+    info!(
+        "signature ({} bytes): {}",
+        actual_signature.len(),
+        hex::encode(actual_signature)
+    );
 
     // Compute SHA256 hash of message
     let mut hasher = Sha256::new();
     hasher.update(message);
     let message_hash = hasher.finalize();
 
-    info!("message hash: {}", hex::encode(&message_hash));
+    info!("message hash: {}", hex::encode(message_hash));
 
     // Verify using PKCS#1 v1.5 with SHA256 hash
     let padding = rsa::Pkcs1v15Sign::new::<Sha256>();
@@ -535,54 +563,6 @@ fn verify_signature_with_key(message: &[u8], signature: &[u8], public_key: &RsaP
     }
 }
 
-/// Parse TPM2B_PUBLIC structure to extract RSA public key
-///
-/// NOTE: This function is kept for reference but is no longer used.
-/// We now extract the public key directly from the AK certificate.
-#[allow(dead_code)]
-fn parse_tpm2b_public(data: &[u8]) -> Result<RsaPublicKey> {
-    use nom::bytes::complete::take;
-    use nom::number::complete::{be_u16, be_u32};
-    use nom::IResult;
-
-    fn parse_public(input: &[u8]) -> IResult<&[u8], (Vec<u8>, Vec<u8>)> {
-        let (input, _size) = be_u16(input)?; // TPM2B size
-        let (input, _type) = be_u16(input)?; // TPMI_ALG_PUBLIC (should be TPM_ALG_RSA = 0x0001)
-        let (input, _name_alg) = be_u16(input)?; // TPMI_ALG_HASH
-
-        // Object attributes (4 bytes)
-        let (input, _) = take(4usize)(input)?;
-
-        // Auth policy
-        let (input, auth_policy_size) = be_u16(input)?;
-        let (input, _) = take(auth_policy_size)(input)?;
-
-        // RSA parameters
-        let (input, _symmetric) = be_u16(input)?; // TPM_ALG_NULL
-        let (input, _scheme) = be_u16(input)?; // RSASSA or RSAPSS
-        let (input, _key_bits) = be_u16(input)?; // Key size
-        let (input, _exponent) = be_u32(input)?; // Public exponent (0 means 65537)
-
-        // Unique (RSA modulus)
-        let (input, modulus_size) = be_u16(input)?;
-        let (input, modulus) = take(modulus_size)(input)?;
-
-        // RSA exponent is typically 65537 (0x010001)
-        let exponent = vec![0x01, 0x00, 0x01];
-
-        Ok((input, (modulus.to_vec(), exponent)))
-    }
-
-    let (_, (modulus, exponent)) =
-        parse_public(data).map_err(|e| anyhow::anyhow!("parse TPM2B_PUBLIC error: {e}"))?;
-
-    RsaPublicKey::new(
-        rsa::BigUint::from_bytes_be(&modulus),
-        rsa::BigUint::from_bytes_be(&exponent),
-    )
-    .context("invalid RSA public key")
-}
-
 //
 // ========== webpki-based certificate verification (with CRL support) ==========
 //
@@ -594,7 +574,7 @@ fn parse_tpm2b_public(data: &[u8]) -> Result<RsaPublicKey> {
 ///
 /// This helper function parses PEM-encoded certificates and converts them to
 /// the DER format expected by webpki.
-fn extract_certs_webpki(cert_pem: &[u8]) -> Result<Vec<webpki::types::CertificateDer<'static>>> {
+fn extract_certs_webpki(cert_pem: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
     use ::pem::parse_many;
 
     let pem_items =
@@ -602,7 +582,7 @@ fn extract_certs_webpki(cert_pem: &[u8]) -> Result<Vec<webpki::types::Certificat
 
     let certs = pem_items
         .into_iter()
-        .map(|pem| webpki::types::CertificateDer::from(pem.into_contents()))
+        .map(|pem| CertificateDer::from(pem.into_contents()))
         .collect();
 
     Ok(certs)
@@ -623,9 +603,6 @@ fn verify_ak_chain_with_collateral(
     ak_cert_der: &[u8],
     collateral: &crate::QuoteCollateral,
 ) -> Result<bool> {
-    use webpki::types::{CertificateDer, UnixTime};
-    use webpki::{BorrowedCertRevocationList, CertRevocationList, EndEntityCert};
-
     info!(
         "verifying AK certificate chain with webpki ({} bytes leaf, {} CRLs)",
         ak_cert_der.len(),
@@ -733,7 +710,7 @@ fn verify_ak_chain_with_collateral(
                 intermediate_certs,
                 time,
                 key_usage,
-                Some(revocation),                // CRL checking
+                Some(revocation), // CRL checking
                 None,
             )
             .map_err(|e| anyhow::anyhow!("certificate chain verification failed: {:?}", e))
@@ -753,7 +730,7 @@ fn verify_ak_chain_with_collateral(
                 intermediate_certs,
                 time,
                 key_usage,
-                None,                            // No CRL checking
+                None, // No CRL checking
                 None,
             )
             .map_err(|e| anyhow::anyhow!("certificate chain verification failed: {:?}", e))
@@ -783,7 +760,6 @@ fn verify_ak_chain_with_collateral(
 /// This function downloads a CRL from the given URL using reqwest.
 /// It's used to fetch CRLs referenced in certificate CRL Distribution Points.
 #[cfg(feature = "crl-download")]
-#[allow(dead_code)]
 fn download_crl(url: &str) -> Result<Vec<u8>> {
     info!("downloading CRL from {}", url);
 
@@ -815,7 +791,6 @@ fn download_crl(url: &str) -> Result<Vec<u8>> {
 ///
 /// # Returns
 /// Vector of CRL URLs found in the certificate
-#[allow(dead_code)]
 fn extract_crl_urls(cert_der: &[u8]) -> Result<Vec<String>> {
     use x509_parser::extensions::ParsedExtension;
 
@@ -865,7 +840,6 @@ fn extract_crl_urls(cert_der: &[u8]) -> Result<Vec<String>> {
 /// # Returns
 /// First CA Issuers URL found in the certificate, or None if not present
 #[cfg(feature = "crl-download")]
-#[allow(dead_code)]
 fn extract_aia_ca_issuers(cert_der: &[u8]) -> Result<Option<String>> {
     use x509_parser::extensions::ParsedExtension;
 
@@ -905,7 +879,6 @@ fn extract_aia_ca_issuers(cert_der: &[u8]) -> Result<Option<String>> {
 /// This function downloads a certificate from the given URL using reqwest.
 /// It's used to fetch intermediate CA certificates referenced in EK certificate AIA extension.
 #[cfg(feature = "crl-download")]
-#[allow(dead_code)]
 fn download_cert(url: &str) -> Result<Vec<u8>> {
     info!("downloading certificate from {}", url);
 
@@ -942,7 +915,6 @@ fn download_cert(url: &str) -> Result<Vec<u8>> {
 /// # Returns
 /// Certificate in PEM format
 #[cfg(feature = "crl-download")]
-#[allow(dead_code)]
 fn der_to_pem(der: &[u8], label: &str) -> Result<String> {
     use base64::Engine;
 
