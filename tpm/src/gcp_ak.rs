@@ -51,8 +51,10 @@ pub fn load_gcp_ak_rsa(tcti_path: Option<&str>) -> Result<(TssContext, KeyHandle
 
     // Create TSS context
     use std::str::FromStr;
+    // Strip "device:" prefix if present (from TpmContext tcti format)
     let tcti_str = tcti_path.unwrap_or("/dev/tpmrm0");
-    let device_config = DeviceConfig::from_str(tcti_str)
+    let device_path = tcti_str.strip_prefix("device:").unwrap_or(tcti_str);
+    let device_config = DeviceConfig::from_str(device_path)
         .context("failed to parse device config")?;
     let tcti = TctiNameConf::Device(device_config);
     let mut context = TssContext::new(tcti).context("failed to create TSS context")?;
@@ -86,6 +88,129 @@ pub fn load_gcp_ak_rsa(tcti_path: Option<&str>) -> Result<(TssContext, KeyHandle
     info!("✓ successfully loaded GCP pre-provisioned AK (handle: {:?})", ak_handle);
 
     Ok((context, ak_handle))
+}
+
+/// Generate a TPM quote using GCP pre-provisioned AK
+///
+/// This function:
+/// 1. Loads the GCP pre-provisioned RSA AK
+/// 2. Reads the specified PCR values
+/// 3. Generates a quote signed by the AK
+/// 4. Reads the AK certificate from NV
+/// 5. Returns a complete TpmQuote structure
+///
+/// # Parameters
+/// - `tcti_path`: Path to TPM device (e.g., "/dev/tpmrm0" or None for default)
+/// - `qualifying_data`: Nonce/challenge data to include in quote
+/// - `pcr_selection`: PCR registers to include in quote
+///
+/// # Returns
+/// - `Ok(TpmQuote)` - Complete quote with signature and certificate
+/// - `Err(_)` - Failed to generate quote
+#[cfg(feature = "gcp-vtpm")]
+pub fn create_quote_with_gcp_ak(
+    tcti_path: Option<&str>,
+    qualifying_data: &[u8],
+    pcr_selection: &crate::PcrSelection,
+) -> Result<crate::TpmQuote> {
+    use tss_esapi::structures::{Data, PcrSelectionListBuilder, PcrSlot, SignatureScheme};
+    use tss_esapi::interface_types::algorithm::HashingAlgorithm;
+    use tss_esapi::traits::Marshall;
+
+    info!("generating TPM quote with GCP pre-provisioned AK...");
+
+    // Load GCP pre-provisioned AK
+    let (mut context, ak_handle) = load_gcp_ak_rsa(tcti_path)?;
+
+    // Build PCR selection list for tss-esapi
+    let mut pcr_selection_list = PcrSelectionListBuilder::new();
+
+    // Convert hash algorithm string to HashingAlgorithm enum
+    let hash_alg = match pcr_selection.bank.as_str() {
+        "sha256" => HashingAlgorithm::Sha256,
+        "sha384" => HashingAlgorithm::Sha384,
+        "sha512" => HashingAlgorithm::Sha512,
+        _ => anyhow::bail!("unsupported hash algorithm: {}", pcr_selection.bank),
+    };
+
+    // Add each PCR to the selection
+    // PcrSlot uses bit mask representation: PCR 0 = bit 0 (0x1), PCR 1 = bit 1 (0x2), etc.
+    for pcr_idx in &pcr_selection.pcrs {
+        let bit_mask = 1u32 << pcr_idx;
+        let pcr_slot = PcrSlot::try_from(bit_mask)
+            .with_context(|| format!("invalid PCR index: {}", pcr_idx))?;
+        pcr_selection_list = pcr_selection_list
+            .with_selection(hash_alg, &[pcr_slot]);
+    }
+
+    let pcr_selection_list = pcr_selection_list.build()
+        .context("failed to build PCR selection list")?;
+
+    // Create qualifying data structure
+    let qual_data = Data::try_from(qualifying_data.to_vec())
+        .context("failed to create qualifying data")?;
+
+    // Use default signing scheme (RSASSA with SHA256)
+    let signing_scheme = SignatureScheme::Null;
+
+    // Generate quote
+    info!("calling TPM Quote command...");
+    let (attest, signature) = context
+        .execute_with_nullauth_session(|ctx| {
+            ctx.quote(ak_handle, qual_data, signing_scheme, pcr_selection_list.clone())
+        })
+        .context("failed to generate quote")?;
+
+    info!("✓ quote generated successfully");
+
+    // Marshall attest structure to bytes (TPMS_ATTEST)
+    let message = attest.marshall().context("failed to marshall attest")?;
+
+    // Marshall signature to bytes (TPMT_SIGNATURE)
+    let signature = signature.marshall().context("failed to marshall signature")?;
+
+    // Read PCR values - read each PCR individually to ensure correct mapping
+    let mut pcr_values = Vec::new();
+    for pcr_idx in &pcr_selection.pcrs {
+        // Build selection for single PCR
+        let bit_mask = 1u32 << pcr_idx;
+        let pcr_slot = PcrSlot::try_from(bit_mask)
+            .with_context(|| format!("invalid PCR index: {}", pcr_idx))?;
+
+        let single_pcr_sel = PcrSelectionListBuilder::new()
+            .with_selection(hash_alg, &[pcr_slot])
+            .build()
+            .context("failed to build single PCR selection")?;
+
+        let (_update_counter, _pcr_sel_out, digest_list) = context
+            .execute_without_session(|ctx| {
+                ctx.pcr_read(single_pcr_sel)
+            })
+            .context("failed to read PCR value")?;
+
+        // Get the first (and only) digest
+        if let Some(digest) = digest_list.value().first() {
+            pcr_values.push(crate::PcrValue {
+                index: *pcr_idx,
+                algorithm: pcr_selection.bank.clone(),
+                value: digest.value().to_vec(),
+            });
+        }
+    }
+
+    // Read AK certificate from NV
+    let ak_cert = read_nv_data(&mut context, gcp_nv_index::AK_RSA_CERT)
+        .context("failed to read AK certificate from NV")?;
+
+    info!("✓ AK certificate read from NV: {} bytes", ak_cert.len());
+
+    Ok(crate::TpmQuote {
+        message,
+        signature,
+        pcr_values,
+        qualifying_data: qualifying_data.to_vec(),
+        ak_cert,
+    })
 }
 
 /// Read data from TPM NV index

@@ -799,6 +799,30 @@ impl TpmContext {
         qualifying_data: &[u8],
         pcr_selection: &PcrSelection,
     ) -> Result<TpmQuote> {
+        // Try native GCP AK implementation first (if feature enabled)
+        #[cfg(feature = "gcp-vtpm")]
+        {
+            match create_quote_with_gcp_ak(Some(&self.tcti), qualifying_data, pcr_selection) {
+                Ok(quote) => {
+                    info!("✓ quote generated using GCP pre-provisioned AK (native)");
+                    return Ok(quote);
+                }
+                Err(e) => {
+                    warn!("failed to use GCP AK, falling back to temporary AK: {}", e);
+                }
+            }
+        }
+
+        // Fall back to temporary AK (tpm2-tools)
+        self.create_quote_with_temp_ak(qualifying_data, pcr_selection)
+    }
+
+    /// Generate a TPM quote using temporary AK (via tpm2-tools)
+    fn create_quote_with_temp_ak(
+        &self,
+        qualifying_data: &[u8],
+        pcr_selection: &PcrSelection,
+    ) -> Result<TpmQuote> {
         let work_dir = self.work_dir();
         let ak_ctx = work_dir.join("ak.ctx");
         let ak_pub = work_dir.join("ak.pub");
@@ -979,4 +1003,4 @@ pub use verify::get_collateral;
 #[cfg(feature = "gcp-vtpm")]
 mod gcp_ak;
 #[cfg(feature = "gcp-vtpm")]
-pub use gcp_ak::{load_gcp_ak_rsa, gcp_nv_index};
+pub use gcp_ak::{create_quote_with_gcp_ak, gcp_nv_index, load_gcp_ak_rsa};
