@@ -222,7 +222,7 @@ pub fn create_quote_with_gcp_ak_algo(
                     (ctx, handle, gcp_nv_index::AK_ECC_CERT)
                 }
                 Err(e) => {
-                    debug!("ECC AK not available, falling back to RSA: {}", e);
+                    debug!("ECC AK not available, falling back to RSA: {e}");
                     let (ctx, handle) = load_gcp_ak_rsa(tcti_path)?;
                     debug!("✓ using RSA AK for quote");
                     (ctx, handle, gcp_nv_index::AK_RSA_CERT)
@@ -253,15 +253,18 @@ pub fn create_quote_with_gcp_ak_algo(
         "sha256" => HashingAlgorithm::Sha256,
         "sha384" => HashingAlgorithm::Sha384,
         "sha512" => HashingAlgorithm::Sha512,
-        _ => anyhow::bail!("unsupported hash algorithm: {}", pcr_selection.bank),
+        _ => anyhow::bail!(
+            "unsupported hash algorithm: {bank}",
+            bank = pcr_selection.bank
+        ),
     };
 
     // Add each PCR to the selection
     // PcrSlot uses bit mask representation: PCR 0 = bit 0 (0x1), PCR 1 = bit 1 (0x2), etc.
     for pcr_idx in &pcr_selection.pcrs {
         let bit_mask = 1u32 << pcr_idx;
-        let pcr_slot = PcrSlot::try_from(bit_mask)
-            .with_context(|| format!("invalid PCR index: {}", pcr_idx))?;
+        let pcr_slot =
+            PcrSlot::try_from(bit_mask).with_context(|| format!("invalid PCR index: {pcr_idx}"))?;
         pcr_selection_list = pcr_selection_list.with_selection(hash_alg, &[pcr_slot]);
     }
 
@@ -304,8 +307,8 @@ pub fn create_quote_with_gcp_ak_algo(
     for pcr_idx in &pcr_selection.pcrs {
         // Build selection for single PCR
         let bit_mask = 1u32 << pcr_idx;
-        let pcr_slot = PcrSlot::try_from(bit_mask)
-            .with_context(|| format!("invalid PCR index: {}", pcr_idx))?;
+        let pcr_slot =
+            PcrSlot::try_from(bit_mask).with_context(|| format!("invalid PCR index: {pcr_idx}"))?;
 
         let single_pcr_sel = PcrSelectionListBuilder::new()
             .with_selection(hash_alg, &[pcr_slot])
@@ -331,8 +334,7 @@ pub fn create_quote_with_gcp_ak_algo(
         .context("failed to read AK certificate from NV")?;
 
     debug!(
-        "✓ AK certificate read from NV 0x{:08x}: {} bytes",
-        ak_cert_nv_index,
+        "✓ AK certificate read from NV 0x{ak_cert_nv_index:08x}: {} bytes",
         ak_cert.len()
     );
 

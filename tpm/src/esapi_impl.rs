@@ -74,7 +74,7 @@ impl EsapiContext {
         }) {
             Ok(h) => h,
             Err(e) => {
-                warn!("failed to get NV index handle for 0x{:08x}: {}", index, e);
+                warn!("failed to get NV index handle for 0x{index:08x}: {e}");
                 return Ok(None);
             }
         };
@@ -86,7 +86,7 @@ impl EsapiContext {
         {
             Ok(data) => Ok(Some(data.to_vec())),
             Err(e) => {
-                warn!("nv_read failed for index 0x{:08x}: {}", index, e);
+                warn!("nv_read failed for index 0x{index:08x}: {e}");
                 Ok(None)
             }
         }
@@ -124,16 +124,13 @@ impl EsapiContext {
                     ctx.nv_write(nv_auth, nv_index_handle, nv_data, offset)
                 })
                 .with_context(|| {
-                    format!(
-                        "failed to write to NV index 0x{:08x} at offset {}",
-                        index, offset
-                    )
+                    format!("failed to write to NV index 0x{index:08x} at offset {offset}")
                 })?;
 
             offset = chunk_end as u16;
         }
 
-        debug!("wrote {} bytes to NV index 0x{:08x}", data.len(), index);
+        debug!("wrote {} bytes to NV index 0x{index:08x}", data.len());
         Ok(true)
     }
 
@@ -168,11 +165,11 @@ impl EsapiContext {
             ctx.nv_define_space(Provision::Owner, None, nv_public)
         }) {
             Ok(_) => {
-                debug!("defined NV index 0x{:08x} with size {}", index, size);
+                debug!("defined NV index 0x{index:08x} with size {size}");
                 Ok(true)
             }
             Err(e) => {
-                warn!("nv_define failed for index 0x{:08x}: {}", index, e);
+                warn!("nv_define failed for index 0x{index:08x}: {e}");
                 Ok(false)
             }
         }
@@ -189,7 +186,7 @@ impl EsapiContext {
         let nv_idx = match self.context.tr_from_tpm_public(TpmHandle::NvIndex(handle)) {
             Ok(h) => NvIndexHandle::from(h),
             Err(e) => {
-                warn!("failed to get NV index handle for 0x{:08x}: {}", index, e);
+                warn!("failed to get NV index handle for 0x{index:08x}: {e}");
                 return Ok(false);
             }
         };
@@ -200,11 +197,11 @@ impl EsapiContext {
             .execute_with_nullauth_session(|ctx| ctx.nv_undefine_space(Provision::Owner, nv_idx))
         {
             Ok(_) => {
-                debug!("undefined NV index 0x{:08x}", index);
+                debug!("undefined NV index 0x{index:08x}");
                 Ok(true)
             }
             Err(e) => {
-                warn!("nv_undefine failed for index 0x{:08x}: {}", index, e);
+                warn!("nv_undefine failed for index 0x{index:08x}: {e}");
                 Ok(false)
             }
         }
@@ -218,7 +215,10 @@ impl EsapiContext {
             "sha256" => HashingAlgorithm::Sha256,
             "sha384" => HashingAlgorithm::Sha384,
             "sha512" => HashingAlgorithm::Sha512,
-            _ => bail!("unsupported hash algorithm: {}", pcr_selection.bank),
+            _ => bail!(
+                "unsupported hash algorithm: {bank}",
+                bank = pcr_selection.bank
+            ),
         };
 
         let mut pcr_values = Vec::new();
@@ -227,7 +227,7 @@ impl EsapiContext {
         for pcr_idx in &pcr_selection.pcrs {
             let bit_mask = 1u32 << pcr_idx;
             let pcr_slot = PcrSlot::try_from(bit_mask)
-                .with_context(|| format!("invalid PCR index: {}", pcr_idx))?;
+                .with_context(|| format!("invalid PCR index: {pcr_idx}"))?;
 
             let pcr_selection_list = PcrSelectionListBuilder::new()
                 .with_selection(hash_alg, &[pcr_slot])
@@ -260,12 +260,12 @@ impl EsapiContext {
             "sha256" => HashingAlgorithm::Sha256,
             "sha384" => HashingAlgorithm::Sha384,
             "sha512" => HashingAlgorithm::Sha512,
-            _ => bail!("unsupported hash algorithm: {}", bank),
+            _ => bail!("unsupported hash algorithm: {bank}"),
         };
 
         // Create PCR handle from index
         let pcr_tpm_handle =
-            PcrTpmHandle::new(pcr).with_context(|| format!("invalid PCR index: {}", pcr))?;
+            PcrTpmHandle::new(pcr).with_context(|| format!("invalid PCR index: {pcr}"))?;
         let object_handle = self
             .context
             .tr_from_tpm_public(TpmHandle::Pcr(pcr_tpm_handle))
@@ -285,9 +285,9 @@ impl EsapiContext {
             .context("failed to convert object handle to PCR handle")?;
         self.context
             .execute_with_nullauth_session(|ctx| ctx.pcr_extend(pcr_handle, digest_values))
-            .with_context(|| format!("failed to extend PCR {} with {}", pcr, bank))?;
+            .with_context(|| format!("failed to extend PCR {pcr} with {bank}"))?;
 
-        debug!("extended PCR {} with {} hash", pcr, bank);
+        debug!("extended PCR {pcr} with {bank} hash");
         Ok(())
     }
 
@@ -400,7 +400,7 @@ impl EsapiContext {
             })
             .context("failed to make key persistent")?;
 
-        debug!("made key persistent at 0x{:08x}", persistent_handle);
+        debug!("made key persistent at 0x{persistent_handle:08x}");
         Ok(true)
     }
 
@@ -410,7 +410,7 @@ impl EsapiContext {
             return Ok(true);
         }
 
-        debug!("creating TPM primary key at 0x{:08x}...", handle);
+        debug!("creating TPM primary key at 0x{handle:08x}...");
         let transient = self.create_primary()?;
         self.evict_control(transient, handle)
     }
@@ -440,7 +440,10 @@ impl EsapiContext {
             "sha256" => HashingAlgorithm::Sha256,
             "sha384" => HashingAlgorithm::Sha384,
             "sha512" => HashingAlgorithm::Sha512,
-            _ => bail!("unsupported hash algorithm: {}", pcr_selection.bank),
+            _ => bail!(
+                "unsupported hash algorithm: {bank}",
+                bank = pcr_selection.bank
+            ),
         };
 
         // Build PCR selection list
@@ -449,7 +452,7 @@ impl EsapiContext {
             .iter()
             .map(|&idx| {
                 let bit_mask = 1u32 << idx;
-                PcrSlot::try_from(bit_mask).with_context(|| format!("invalid PCR index: {}", idx))
+                PcrSlot::try_from(bit_mask).with_context(|| format!("invalid PCR index: {idx}"))
             })
             .collect();
         let pcr_slots = pcr_slots?;
@@ -586,7 +589,10 @@ impl EsapiContext {
             "sha256" => HashingAlgorithm::Sha256,
             "sha384" => HashingAlgorithm::Sha384,
             "sha512" => HashingAlgorithm::Sha512,
-            _ => bail!("unsupported hash algorithm: {}", pcr_selection.bank),
+            _ => bail!(
+                "unsupported hash algorithm: {bank}",
+                bank = pcr_selection.bank
+            ),
         };
 
         let pcr_slots: Result<Vec<PcrSlot>> = pcr_selection
@@ -594,7 +600,7 @@ impl EsapiContext {
             .iter()
             .map(|&idx| {
                 let bit_mask = 1u32 << idx;
-                PcrSlot::try_from(bit_mask).with_context(|| format!("invalid PCR index: {}", idx))
+                PcrSlot::try_from(bit_mask).with_context(|| format!("invalid PCR index: {idx}"))
             })
             .collect();
         let pcr_slots = pcr_slots?;

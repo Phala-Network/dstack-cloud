@@ -121,7 +121,11 @@ impl PcrSelection {
 
     pub fn to_arg(&self) -> String {
         let pcr_list: Vec<String> = self.pcrs.iter().map(|p| p.to_string()).collect();
-        format!("{}:{}", self.bank, pcr_list.join(","))
+        format!(
+            "{}:{pcr_list_joined}",
+            self.bank,
+            pcr_list_joined = pcr_list.join(",")
+        )
     }
 }
 
@@ -277,7 +281,7 @@ impl TpmContext {
                 }
             }
             Err(e) => {
-                warn!("failed to read PCR values: {}", e);
+                warn!("failed to read PCR values: {e}");
             }
         }
     }
@@ -319,7 +323,7 @@ impl TpmContext {
         // Write sealed blob to NV
         ctx.nv_write(nv_index, &sealed_blob.data)?;
 
-        debug!("sealed data to NV index 0x{:08x}", nv_index);
+        debug!("sealed data to NV index 0x{nv_index:08x}");
         Ok(())
     }
 
@@ -345,7 +349,7 @@ impl TpmContext {
         // Unseal data
         let data = ctx.unseal(&pub_bytes, &priv_bytes, parent_handle, pcr_selection)?;
 
-        debug!("unsealed data from NV index 0x{:08x}", nv_index);
+        debug!("unsealed data from NV index 0x{nv_index:08x}");
         Ok(Some(data))
     }
 
@@ -360,7 +364,7 @@ impl TpmContext {
             Some(data) => {
                 let array: [u8; N] = data
                     .try_into()
-                    .map_err(|_| anyhow::anyhow!("unsealed data size mismatch: expected {}", N))?;
+                    .map_err(|_| anyhow::anyhow!("unsealed data size mismatch: expected {N}"))?;
                 Ok(Some(array))
             }
             None => Ok(None),
@@ -414,8 +418,7 @@ impl TpmContext {
 
         if let Some(cert) = ctx.nv_read(AK_RSA_CERT_NV_INDEX)? {
             debug!(
-                "read AK certificate from NV index 0x{:08x} ({} bytes)",
-                AK_RSA_CERT_NV_INDEX,
+                "read AK certificate from NV index 0x{AK_RSA_CERT_NV_INDEX:08x} ({} bytes)",
                 cert.len()
             );
             return Ok(Some(cert));
@@ -423,8 +426,7 @@ impl TpmContext {
 
         if let Some(cert) = ctx.nv_read(AK_ECC_CERT_NV_INDEX)? {
             debug!(
-                "read AK certificate from NV index 0x{:08x} ({} bytes)",
-                AK_ECC_CERT_NV_INDEX,
+                "read AK certificate from NV index 0x{AK_ECC_CERT_NV_INDEX:08x} ({} bytes)",
                 cert.len()
             );
             return Ok(Some(cert));

@@ -141,8 +141,7 @@ pub fn verify_quote(
         }
         Err(e) => {
             result.error_message = Some(format!(
-                "failed to extract AK public key from certificate: {}",
-                e
+                "failed to extract AK public key from certificate: {e}"
             ));
             return Ok(result);
         }
@@ -175,7 +174,7 @@ pub fn verify_quote(
                 Some("AK certificate chain verification failed (webpki)".to_string());
         }
         Err(e) => {
-            result.error_message = Some(format!("AK certificate chain verification error: {}", e));
+            result.error_message = Some(format!("AK certificate chain verification error: {e}"));
         }
     }
 
@@ -228,7 +227,7 @@ pub fn get_collateral(quote: &TpmQuote, root_ca_pem: &str) -> Result<crate::Quot
     // Step 2: Download intermediate CA from AK's AIA extension
     let intermediate_ca_url = extract_aia_ca_issuers(ak_cert_der)?
         .ok_or_else(|| anyhow::anyhow!("no AIA CA Issuers URL in AK certificate"))?;
-    debug!("downloading intermediate CA from: {}", intermediate_ca_url);
+    debug!("downloading intermediate CA from: {intermediate_ca_url}");
     let intermediate_ca_der = download_cert(&intermediate_ca_url)?;
     let intermediate_ca_pem = der_to_pem(&intermediate_ca_der, "CERTIFICATE")?;
 
@@ -388,12 +387,12 @@ fn parse_tpms_attest(data: &[u8]) -> Result<TpmsAttest> {
 
     // Verify magic number (TPM_GENERATED_VALUE = 0xff544347)
     if attest.magic != 0xff544347 {
-        bail!("invalid magic number: 0x{:08x}", attest.magic);
+        bail!("invalid magic number: 0x{magic:08x}", magic = attest.magic);
     }
 
     // Verify type is TPM_ST_ATTEST_QUOTE (0x8018)
     if attest.type_ != 0x8018 {
-        bail!("invalid attest type: 0x{:04x}", attest.type_);
+        bail!("invalid attest type: 0x{type_:04x}", type_ = attest.type_);
     }
 
     Ok(attest)
@@ -563,7 +562,7 @@ fn verify_signature_with_key(
 
     // Verify hash algorithm is SHA256
     if hash_alg != 0x000B {
-        bail!("unsupported hash algorithm: 0x{:04x}", hash_alg);
+        bail!("unsupported hash algorithm: 0x{hash_alg:04x}");
     }
 
     // Extract actual signature bytes (after sigAlg + hash)
@@ -591,7 +590,7 @@ fn verify_signature_with_key(
         PublicKey::Rsa(rsa_key) => {
             // Verify signature algorithm is RSASSA
             if sig_alg != 0x0014 {
-                bail!("expected RSASSA (0x0014), got 0x{:04x}", sig_alg);
+                bail!("expected RSASSA (0x0014), got 0x{sig_alg:04x}");
             }
 
             // Parse TPM2B_PUBLIC_KEY_RSA structure
@@ -606,7 +605,7 @@ fn verify_signature_with_key(
             }
             let rsa_sig_data = &actual_signature[2..2 + rsa_sig_size];
 
-            debug!("RSA signature parsed: {} bytes", rsa_sig_size);
+            debug!("RSA signature parsed: {rsa_sig_size} bytes");
 
             // Verify using PKCS#1 v1.5 signature scheme with SHA256
             // TPM2 RSASSA signatures use standard PKCS#1 v1.5 padding with hash
@@ -666,10 +665,7 @@ fn verify_signature_with_key(
             sig_bytes.extend_from_slice(r_data);
             sig_bytes.extend_from_slice(s_data);
 
-            debug!(
-                "ECDSA signature parsed: r={} bytes, s={} bytes",
-                r_size, s_size
-            );
+            debug!("ECDSA signature parsed: r={r_size} bytes, s={s_size} bytes",);
 
             // Parse as ECDSA signature (r || s format)
             let signature =
@@ -706,7 +702,7 @@ fn extract_certs_webpki(cert_pem: &[u8]) -> Result<Vec<CertificateDer<'static>>>
     use ::pem::parse_many;
 
     let pem_items =
-        parse_many(cert_pem).map_err(|e| anyhow::anyhow!("failed to parse PEM: {}", e))?;
+        parse_many(cert_pem).map_err(|e| anyhow::anyhow!("failed to parse PEM: {e}"))?;
 
     let certs = pem_items
         .into_iter()
@@ -802,7 +798,7 @@ fn verify_ak_chain_with_collateral(
             .map(|(i, der)| {
                 BorrowedCertRevocationList::from_der(der)
                     .map(|crl| crl.into())
-                    .map_err(|e| anyhow::anyhow!("failed to parse CRL #{}: {:?}", i, e))
+                    .map_err(|e| anyhow::anyhow!("failed to parse CRL #{i}: {e:?}"))
             })
             .collect::<Result<Vec<_>>>()?;
         let crl_refs: Vec<&CertRevocationList> = crls.iter().collect();
@@ -841,7 +837,7 @@ fn verify_ak_chain_with_collateral(
                 Some(revocation), // CRL checking
                 None,
             )
-            .map_err(|e| anyhow::anyhow!("certificate chain verification failed: {:?}", e))
+            .map_err(|e| anyhow::anyhow!("certificate chain verification failed: {e:?}"))
     } else {
         debug!("no CRLs available (no certificates have CRL Distribution Points)");
         debug!("verifying certificate chain WITHOUT CRL checking");
@@ -877,7 +873,7 @@ fn verify_ak_chain_with_collateral(
             Ok(true)
         }
         Err(e) => {
-            warn!("✗ AK certificate chain verification failed: {}", e);
+            warn!("✗ AK certificate chain verification failed: {e}");
             Ok(false)
         }
     }
@@ -889,10 +885,10 @@ fn verify_ak_chain_with_collateral(
 /// It's used to fetch CRLs referenced in certificate CRL Distribution Points.
 #[cfg(feature = "crl-download")]
 fn download_crl(url: &str) -> Result<Vec<u8>> {
-    debug!("downloading CRL from {}", url);
+    debug!("downloading CRL from {url}");
 
     let response =
-        reqwest::blocking::get(url).context(format!("failed to download CRL from {}", url))?;
+        reqwest::blocking::get(url).context(format!("failed to download CRL from {url}"))?;
 
     if !response.status().is_success() {
         bail!("CRL download failed with status: {}", response.status());
@@ -991,7 +987,7 @@ fn extract_aia_ca_issuers(cert_der: &[u8]) -> Result<Option<String>> {
                 // Extract URL from access location
                 if let x509_parser::extensions::GeneralName::URI(uri) = &access_desc.access_location
                 {
-                    debug!("found AIA CA Issuers URL: {}", uri);
+                    debug!("found AIA CA Issuers URL: {uri}");
                     return Ok(Some(uri.to_string()));
                 }
             }
@@ -1008,10 +1004,10 @@ fn extract_aia_ca_issuers(cert_der: &[u8]) -> Result<Option<String>> {
 /// It's used to fetch intermediate CA certificates referenced in EK certificate AIA extension.
 #[cfg(feature = "crl-download")]
 fn download_cert(url: &str) -> Result<Vec<u8>> {
-    debug!("downloading certificate from {}", url);
+    debug!("downloading certificate from {url}");
 
     let response = reqwest::blocking::get(url)
-        .context(format!("failed to download certificate from {}", url))?;
+        .context(format!("failed to download certificate from {url}"))?;
 
     if !response.status().is_success() {
         bail!(
@@ -1049,12 +1045,12 @@ fn der_to_pem(der: &[u8], label: &str) -> Result<String> {
     let b64 = base64::engine::general_purpose::STANDARD.encode(der);
 
     // Format as PEM with 64-character lines
-    let mut pem = format!("-----BEGIN {}-----\n", label);
+    let mut pem = format!("-----BEGIN {label}-----\n");
     for chunk in b64.as_bytes().chunks(64) {
         pem.push_str(std::str::from_utf8(chunk)?);
         pem.push('\n');
     }
-    pem.push_str(&format!("-----END {}-----\n", label));
+    pem.push_str(&format!("-----END {label}-----\n"));
 
     Ok(pem)
 }
