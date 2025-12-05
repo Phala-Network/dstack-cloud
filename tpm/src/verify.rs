@@ -157,8 +157,7 @@ pub fn verify_quote(
         }
         Err(e) => {
             warn!(
-                "signature verification error: {}, continuing to certificate chain verification",
-                e
+                "signature verification error: {e}, continuing to certificate chain verification"
             );
             result.error_message = Some(format!("signature verification error: {e}"));
             // DON'T return here - continue to check certificate chain
@@ -701,8 +700,7 @@ fn verify_signature_with_key(
 fn extract_certs_webpki(cert_pem: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
     use ::pem::parse_many;
 
-    let pem_items =
-        parse_many(cert_pem).map_err(|e| anyhow::anyhow!("failed to parse PEM: {e}"))?;
+    let pem_items = parse_many(cert_pem).context("failed to parse PEM")?;
 
     let certs = pem_items
         .into_iter()
@@ -735,8 +733,8 @@ fn verify_ak_chain_with_collateral(
 
     // Parse leaf cert (AK certificate) as webpki EndEntityCert
     let ak_cert_der_owned = CertificateDer::from(ak_cert_der.to_vec());
-    let ak_cert = EndEntityCert::try_from(&ak_cert_der_owned)
-        .map_err(|e| anyhow::anyhow!("failed to parse AK certificate: {:?}", e))?;
+    let ak_cert =
+        EndEntityCert::try_from(&ak_cert_der_owned).context("failed to parse AK certificate")?;
 
     // Parse cert chain (intermediate CAs + root CA)
     let chain_certs = extract_certs_webpki(collateral.cert_chain_pem.as_bytes())?;
@@ -751,7 +749,7 @@ fn verify_ak_chain_with_collateral(
         .last()
         .ok_or_else(|| anyhow::anyhow!("empty cert chain"))?;
     let trust_anchor = webpki::anchor_from_trusted_cert(root_cert_der)
-        .map_err(|e| anyhow::anyhow!("failed to create trust anchor from root CA: {:?}", e))?;
+        .context("failed to create trust anchor from root CA")?;
 
     // All certs except last are intermediates
     let intermediate_certs = if chain_certs.len() > 1 {
@@ -798,7 +796,7 @@ fn verify_ak_chain_with_collateral(
             .map(|(i, der)| {
                 BorrowedCertRevocationList::from_der(der)
                     .map(|crl| crl.into())
-                    .map_err(|e| anyhow::anyhow!("failed to parse CRL #{i}: {e:?}"))
+                    .with_context(|| format!("failed to parse CRL #{i}"))
             })
             .collect::<Result<Vec<_>>>()?;
         let crl_refs: Vec<&CertRevocationList> = crls.iter().collect();
@@ -837,7 +835,7 @@ fn verify_ak_chain_with_collateral(
                 Some(revocation), // CRL checking
                 None,
             )
-            .map_err(|e| anyhow::anyhow!("certificate chain verification failed: {e:?}"))
+            .context("certificate chain verification failed")
     } else {
         debug!("no CRLs available (no certificates have CRL Distribution Points)");
         debug!("verifying certificate chain WITHOUT CRL checking");
@@ -857,7 +855,7 @@ fn verify_ak_chain_with_collateral(
                 None, // No CRL checking
                 None,
             )
-            .map_err(|e| anyhow::anyhow!("certificate chain verification failed: {:?}", e))
+            .context("certificate chain verification failed")
     };
 
     match result {

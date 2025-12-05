@@ -8,7 +8,7 @@
 //! tss-esapi library (TPM2 Software Stack Enhanced System API).
 //! It handles PCR operations, sealing, unsealing, NV storage, and attestation.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_human_bytes as hex_bytes;
 use std::path::Path;
@@ -364,7 +364,8 @@ impl TpmContext {
             Some(data) => {
                 let array: [u8; N] = data
                     .try_into()
-                    .map_err(|_| anyhow::anyhow!("unsealed data size mismatch: expected {N}"))?;
+                    .ok()
+                    .context("unsealed data size mismatch")?;
                 Ok(Some(array))
             }
             None => Ok(None),
