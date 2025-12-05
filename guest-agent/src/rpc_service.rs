@@ -305,9 +305,8 @@ impl DstackGuestRpc for InternalRpcHandler {
                 })
             }
             "tpm" => {
-                let tpm =
-                    dstack_tpm::TpmContext::open(None).context("Failed to open TPM context")?;
-                let pcr_selection = dstack_tpm::default_pcr_policy();
+                let tpm = tpm_attest::TpmContext::detect().context("Failed to open TPM context")?;
+                let pcr_selection = tpm_attest::default_pcr_policy();
                 let tpm_quote = tpm
                     .create_quote(&report_data, &pcr_selection)
                     .context("Failed to create TPM quote")?;

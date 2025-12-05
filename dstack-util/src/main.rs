@@ -766,11 +766,11 @@ fn cmd_tpm_quote(args: TpmQuoteArgs) -> Result<()> {
     };
 
     // Parse key algorithm
-    let key_algo = dstack_tpm::KeyAlgorithm::from_str(&args.key_algo)
+    let key_algo = tpm_attest::KeyAlgorithm::from_str(&args.key_algo)
         .context("Failed to parse key algorithm")?;
 
-    let tpm = dstack_tpm::TpmContext::open(None).context("Failed to open TPM context")?;
-    let pcr_selection = dstack_tpm::default_pcr_policy();
+    let tpm = tpm_attest::TpmContext::open(None).context("Failed to open TPM context")?;
+    let pcr_selection = tpm_attest::default_pcr_policy();
     let tpm_quote = tpm
         .create_quote_with_algo(&qualifying_data, &pcr_selection, key_algo)
         .context("Failed to create TPM quote")?;
@@ -791,7 +791,7 @@ fn cmd_tpm_quote(args: TpmQuoteArgs) -> Result<()> {
 fn cmd_tpm_verify(args: TpmVerifyArgs) -> Result<()> {
     let root_ca_pem = fs::read_to_string(&args.root_ca).context("Failed to read root CA")?;
     let quote_json = fs::read_to_string(&args.quote).context("Failed to read quote file")?;
-    let tpm_quote: dstack_tpm::TpmQuote =
+    let tpm_quote: tpm_attest::TpmQuote =
         serde_json::from_str(&quote_json).context("Failed to parse quote JSON")?;
 
     println!("=== TPM Quote Verification (dcap-qvl architecture) ===");
@@ -802,16 +802,19 @@ fn cmd_tpm_verify(args: TpmVerifyArgs) -> Result<()> {
     // Step 1: Get collateral (certificates + CRLs)
     println!("[Step 1] Fetching quote collateral (certificates + CRLs)...");
     let collateral =
-        dstack_tpm::get_collateral(&tpm_quote, &root_ca_pem).context("Failed to get collateral")?;
-    println!(
-        "  ✓ Collateral fetched: {} CRLs downloaded",
-        collateral.crls.len()
-    );
+        tpm_qvl::get_collateral(&tpm_quote, &root_ca_pem).context("Failed to get collateral")?;
+    let crl_count = collateral.crls.len()
+        + if collateral.root_ca_crl.is_some() {
+            1
+        } else {
+            0
+        };
+    println!("  ✓ Collateral fetched: {} CRLs downloaded", crl_count);
     println!();
 
     // Step 2: Verify quote with conditional CRL checking
     println!("[Step 2] Verifying quote (CRL verification if CRL DP present)...");
-    let result = dstack_tpm::verify_quote(&tpm_quote, &collateral)?;
+    let result = tpm_qvl::verify_quote(&tpm_quote, &collateral, &root_ca_pem)?;
 
     println!();
     println!("=== Verification Result ===");
@@ -854,12 +857,20 @@ fn cmd_tpm_verify(args: TpmVerifyArgs) -> Result<()> {
     println!();
 
     if result.success() {
-        let crl_msg = if collateral.crls.is_empty() {
-            "(no CRLs available)"
+        let crl_count = collateral.crls.len()
+            + if collateral.root_ca_crl.is_some() {
+                1
+            } else {
+                0
+            };
+        if crl_count == 0 {
+            println!("🎉 VERIFICATION PASSED (no CRLs available)");
         } else {
-            &format!("(with {} CRL(s) verified)", collateral.crls.len())
-        };
-        println!("🎉 VERIFICATION PASSED {}", crl_msg);
+            println!(
+                "🎉 VERIFICATION PASSED (with {} CRL(s) verified)",
+                crl_count
+            );
+        }
         Ok(())
     } else {
         anyhow::bail!("Verification failed");

@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "tpm-qvl"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+tracing.workspace = true
+
+# Cryptographic verification
+rsa = "0.9"
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+x509-parser = "0.16"
+nom = "7.1"
+base64 = "0.22"
+sha2 = { workspace = true, features = ["oid"] }
+
+# Certificate chain verification
+rustls-webpki = { version = "0.103.8", features = ["alloc", "ring"] }
+rustls-pki-types = "1.13.1"
+dcap-qvl-webpki = { version = "0.103", features = ["alloc", "ring"] }
+pem = "3.0"
+
+# TPM quote data structures
+tpm-attest.workspace = true
+
+# CRL download (optional)
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+    "blocking",
+], optional = true }
+
+[features]
+default = ["crl-download"]
+crl-download = ["reqwest"]

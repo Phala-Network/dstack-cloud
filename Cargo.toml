@@ -19,7 +19,8 @@ members = [
     "ra-rpc",
     "ra-tls",
     "tdx-attest",
-    "tpm",
+    "tpm-attest",
+    "tpm-qvl",
     "dstack-util",
     "iohash",
     "guest-agent",
@@ -68,7 +69,8 @@ cc-eventlog = { path = "cc-eventlog" }
 supervisor = { path = "supervisor" }
 supervisor-client = { path = "supervisor/client" }
 tdx-attest = { path = "tdx-attest" }
-dstack-tpm = { path = "tpm" }
+tpm-attest = { path = "tpm-attest" }
+tpm-qvl = { path = "tpm-qvl" }
 certbot = { path = "certbot" }
 rocket-vsock-listener = { path = "rocket-vsock-listener" }
 host-api = { path = "host-api", default-features = false }

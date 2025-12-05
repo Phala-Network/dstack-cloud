@@ -48,13 +48,13 @@ use cmd_lib::run_fun as cmd;
 use dstack_gateway_rpc::{
     gateway_client::GatewayClient, RegisterCvmRequest, RegisterCvmResponse, WireGuardPeer,
 };
-use dstack_tpm::{self as tpm, TpmContext};
 use ra_tls::{
     cert::CertConfig,
     rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256},
 };
 use serde_human_bytes as hex_bytes;
 use serde_json::Value;
+use tpm_attest::{self as tpm, TpmContext};
 
 mod config_id_verifier;
 
