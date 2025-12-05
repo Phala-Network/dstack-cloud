@@ -12,7 +12,7 @@ use p256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
 use rsa::RsaPublicKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use x509_parser::{extensions::DistributionPointName, prelude::*};
 
 use rustls_pki_types::{CertificateDer, UnixTime};
@@ -136,7 +136,7 @@ pub fn verify_quote(
     // Step 5: Extract AK public key from certificate
     let ak_public_key = match extract_ak_public_key_from_cert(&quote.ak_cert) {
         Ok(key) => {
-            info!("extracted AK public key from certificate");
+            debug!("extracted AK public key from certificate");
             key
         }
         Err(e) => {
@@ -219,22 +219,22 @@ pub fn verify_quote(
 pub fn get_collateral(quote: &TpmQuote, root_ca_pem: &str) -> Result<crate::QuoteCollateral> {
     use crate::QuoteCollateral;
 
-    info!("fetching quote collateral (cert chain + CRLs)");
+    debug!("fetching quote collateral (cert chain + CRLs)");
 
     // Step 1: Extract AK certificate (leaf cert) from quote
     let ak_cert_der = &quote.ak_cert;
-    info!("AK certificate (leaf) found: {} bytes", ak_cert_der.len());
+    debug!("AK certificate (leaf) found: {} bytes", ak_cert_der.len());
 
     // Step 2: Download intermediate CA from AK's AIA extension
     let intermediate_ca_url = extract_aia_ca_issuers(ak_cert_der)?
         .ok_or_else(|| anyhow::anyhow!("no AIA CA Issuers URL in AK certificate"))?;
-    info!("downloading intermediate CA from: {}", intermediate_ca_url);
+    debug!("downloading intermediate CA from: {}", intermediate_ca_url);
     let intermediate_ca_der = download_cert(&intermediate_ca_url)?;
     let intermediate_ca_pem = der_to_pem(&intermediate_ca_der, "CERTIFICATE")?;
 
     // Step 3: Build cert chain (intermediate + root)
     let cert_chain_pem = format!("{}{}", intermediate_ca_pem, root_ca_pem);
-    info!("cert chain built: intermediate + root CA");
+    debug!("cert chain built: intermediate + root CA");
 
     // Step 4: Extract CRL URLs from all certs
     // Use pem crate to parse root CA (handles multi-line base64 correctly)
@@ -252,18 +252,18 @@ pub fn get_collateral(quote: &TpmQuote, root_ca_pem: &str) -> Result<crate::Quot
 
     // Step 5: Download all CRLs in chain order
     // CRL verification is conditional: only verify if CRL DP is present
-    info!("downloading CRLs (conditional: verify if CRL DP present)...");
+    debug!("downloading CRLs (conditional: verify if CRL DP present)...");
     let mut crls = Vec::new();
 
     'outter: for (name, cert_crl_urls) in all_crl_urls {
         if cert_crl_urls.is_empty() {
-            info!("  {name} cert has no CRL DP");
+            debug!("  {name} cert has no CRL DP");
             continue;
         }
         for url in cert_crl_urls {
             match download_crl(&url) {
                 Ok(crl) => {
-                    info!("  {name} CRL: {} bytes", crl.len());
+                    debug!("  {name} CRL: {} bytes", crl.len());
                     crls.push(crl);
                     continue 'outter;
                 }
@@ -276,7 +276,7 @@ pub fn get_collateral(quote: &TpmQuote, root_ca_pem: &str) -> Result<crate::Quot
         bail!("failed to download CRL for {name}");
     }
 
-    info!("✓ collateral fetched: {} CRLs downloaded", crls.len());
+    debug!("✓ collateral fetched: {} CRLs downloaded", crls.len());
 
     Ok(QuoteCollateral {
         cert_chain_pem,
@@ -504,7 +504,7 @@ fn extract_ak_public_key_from_cert(ak_cert_der: &[u8]) -> Result<PublicKey> {
         let public_key = RsaPublicKey::from_pkcs1_der(spki.subject_public_key.data.as_ref())
             .context("failed to decode RSA public key from certificate")?;
 
-        info!(
+        debug!(
             "extracted RSA AK public key from certificate ({} bits)",
             public_key.size() * 8
         );
@@ -518,7 +518,7 @@ fn extract_ak_public_key_from_cert(ak_cert_der: &[u8]) -> Result<PublicKey> {
         let verifying_key = VerifyingKey::from_sec1_bytes(public_key_bytes)
             .context("failed to decode ECC public key from certificate")?;
 
-        info!("extracted ECC P-256 AK public key from certificate");
+        debug!("extracted ECC P-256 AK public key from certificate");
 
         Ok(PublicKey::Ecc(verifying_key))
     } else {
@@ -569,12 +569,12 @@ fn verify_signature_with_key(
     // Extract actual signature bytes (after sigAlg + hash)
     let actual_signature = &signature[4..];
 
-    info!(
+    debug!(
         "message ({} bytes): {}",
         message.len(),
         hex::encode(message)
     );
-    info!(
+    debug!(
         "signature ({} bytes): {}",
         actual_signature.len(),
         hex::encode(actual_signature)
@@ -585,7 +585,7 @@ fn verify_signature_with_key(
     hasher.update(message);
     let message_hash = hasher.finalize();
 
-    info!("message hash: {}", hex::encode(message_hash));
+    debug!("message hash: {}", hex::encode(message_hash));
 
     match public_key {
         PublicKey::Rsa(rsa_key) => {
@@ -606,7 +606,7 @@ fn verify_signature_with_key(
             }
             let rsa_sig_data = &actual_signature[2..2 + rsa_sig_size];
 
-            info!("RSA signature parsed: {} bytes", rsa_sig_size);
+            debug!("RSA signature parsed: {} bytes", rsa_sig_size);
 
             // Verify using PKCS#1 v1.5 signature scheme with SHA256
             // TPM2 RSASSA signatures use standard PKCS#1 v1.5 padding with hash
@@ -614,7 +614,7 @@ fn verify_signature_with_key(
             let padding = rsa::Pkcs1v15Sign::new::<Sha256>();
             match rsa_key.verify(padding, &message_hash, rsa_sig_data) {
                 Ok(_) => {
-                    info!("✓ RSA signature verification successful");
+                    debug!("✓ RSA signature verification successful");
                     Ok(true)
                 }
                 Err(e) => {
@@ -666,7 +666,7 @@ fn verify_signature_with_key(
             sig_bytes.extend_from_slice(r_data);
             sig_bytes.extend_from_slice(s_data);
 
-            info!(
+            debug!(
                 "ECDSA signature parsed: r={} bytes, s={} bytes",
                 r_size, s_size
             );
@@ -679,7 +679,7 @@ fn verify_signature_with_key(
             // TPM signs the SHA256 hash of the message, so we use verify_prehash
             match ecc_key.verify_prehash(&message_hash, &signature) {
                 Ok(_) => {
-                    info!("✓ ECC signature verification successful");
+                    debug!("✓ ECC signature verification successful");
                     Ok(true)
                 }
                 Err(e) => {
@@ -731,7 +731,7 @@ fn verify_ak_chain_with_collateral(
     ak_cert_der: &[u8],
     collateral: &crate::QuoteCollateral,
 ) -> Result<bool> {
-    info!(
+    debug!(
         "verifying AK certificate chain with webpki ({} bytes leaf, {} CRLs)",
         ak_cert_der.len(),
         collateral.crls.len()
@@ -748,7 +748,7 @@ fn verify_ak_chain_with_collateral(
         bail!("no certificates found in cert chain");
     }
 
-    info!("loaded {} certificate(s) from chain", chain_certs.len());
+    debug!("loaded {} certificate(s) from chain", chain_certs.len());
 
     // Last cert in chain is root CA (trust anchor)
     let root_cert_der = chain_certs
@@ -764,7 +764,7 @@ fn verify_ak_chain_with_collateral(
         &[]
     };
 
-    info!(
+    debug!(
         "trust anchor created, {} intermediate(s)",
         intermediate_certs.len()
     );
@@ -782,16 +782,16 @@ fn verify_ak_chain_with_collateral(
     // Because the original rustls-webpki doesn't check the ROOT CA against the CRL,
     // we use dcap-qvl-webpki to check it separately (following dcap-qvl pattern)
     if !collateral.crls.is_empty() {
-        info!("checking root CA against CRL (dcap-qvl-webpki)");
+        debug!("checking root CA against CRL (dcap-qvl-webpki)");
         let crl_refs: Vec<&[u8]> = collateral.crls.iter().map(|c| c.as_slice()).collect();
         dcap_qvl_webpki::check_single_cert_crl(root_cert_der.as_ref(), &crl_refs, time)?;
-        info!("✓ root CA CRL check passed");
+        debug!("✓ root CA CRL check passed");
     }
 
     // Parse CRLs and verify (conditional: only verify with CRL if CRLs are present)
     // Following user guidance: CRL verification is required if CRL DP is present in certs
     let result = if !collateral.crls.is_empty() {
-        info!(
+        debug!(
             "parsing {} CRL(s) for revocation checking",
             collateral.crls.len()
         );
@@ -807,7 +807,7 @@ fn verify_ak_chain_with_collateral(
             .collect::<Result<Vec<_>>>()?;
         let crl_refs: Vec<&CertRevocationList> = crls.iter().collect();
 
-        info!("creating revocation options (CRL enforcement)");
+        debug!("creating revocation options (CRL enforcement)");
         let revocation_builder = webpki::RevocationOptionsBuilder::new(&crl_refs)
             .map_err(|_| anyhow::anyhow!("failed to create RevocationOptionsBuilder"))?;
 
@@ -822,7 +822,7 @@ fn verify_ak_chain_with_collateral(
             .with_expiration_policy(webpki::ExpirationPolicy::Enforce)
             .build();
 
-        info!("verifying certificate chain with CRL revocation checking");
+        debug!("verifying certificate chain with CRL revocation checking");
 
         // Verify with CRL checking
         // TPM Attestation: Intermediate CA has EKU = tcg-kp-AIKCertificate (2.23.133.8.1)
@@ -843,8 +843,8 @@ fn verify_ak_chain_with_collateral(
             )
             .map_err(|e| anyhow::anyhow!("certificate chain verification failed: {:?}", e))
     } else {
-        info!("no CRLs available (no certificates have CRL Distribution Points)");
-        info!("verifying certificate chain WITHOUT CRL checking");
+        debug!("no CRLs available (no certificates have CRL Distribution Points)");
+        debug!("verifying certificate chain WITHOUT CRL checking");
 
         // Verify without CRL checking
         // TPM Attestation: use TCG AIK Certificate EKU
@@ -867,9 +867,9 @@ fn verify_ak_chain_with_collateral(
     match result {
         Ok(_) => {
             if collateral.crls.is_empty() {
-                info!("✓ AK certificate chain verification successful (webpki, no CRLs)");
+                debug!("✓ AK certificate chain verification successful (webpki, no CRLs)");
             } else {
-                info!(
+                debug!(
                     "✓ AK certificate chain verification successful (webpki + {} CRL(s))",
                     collateral.crls.len()
                 );
@@ -889,7 +889,7 @@ fn verify_ak_chain_with_collateral(
 /// It's used to fetch CRLs referenced in certificate CRL Distribution Points.
 #[cfg(feature = "crl-download")]
 fn download_crl(url: &str) -> Result<Vec<u8>> {
-    info!("downloading CRL from {}", url);
+    debug!("downloading CRL from {}", url);
 
     let response =
         reqwest::blocking::get(url).context(format!("failed to download CRL from {}", url))?;
@@ -903,7 +903,7 @@ fn download_crl(url: &str) -> Result<Vec<u8>> {
         .context("failed to read CRL response body")?
         .to_vec();
 
-    info!("downloaded {} bytes CRL from {}", crl_bytes.len(), url);
+    debug!("downloaded {} bytes CRL from {}", crl_bytes.len(), url);
 
     Ok(crl_bytes)
 }
@@ -991,14 +991,14 @@ fn extract_aia_ca_issuers(cert_der: &[u8]) -> Result<Option<String>> {
                 // Extract URL from access location
                 if let x509_parser::extensions::GeneralName::URI(uri) = &access_desc.access_location
                 {
-                    info!("found AIA CA Issuers URL: {}", uri);
+                    debug!("found AIA CA Issuers URL: {}", uri);
                     return Ok(Some(uri.to_string()));
                 }
             }
         }
     }
 
-    info!("no AIA CA Issuers URL found in certificate");
+    debug!("no AIA CA Issuers URL found in certificate");
     Ok(None)
 }
 
@@ -1008,7 +1008,7 @@ fn extract_aia_ca_issuers(cert_der: &[u8]) -> Result<Option<String>> {
 /// It's used to fetch intermediate CA certificates referenced in EK certificate AIA extension.
 #[cfg(feature = "crl-download")]
 fn download_cert(url: &str) -> Result<Vec<u8>> {
-    info!("downloading certificate from {}", url);
+    debug!("downloading certificate from {}", url);
 
     let response = reqwest::blocking::get(url)
         .context(format!("failed to download certificate from {}", url))?;
@@ -1025,7 +1025,7 @@ fn download_cert(url: &str) -> Result<Vec<u8>> {
         .context("failed to read certificate response body")?
         .to_vec();
 
-    info!(
+    debug!(
         "downloaded {} bytes certificate from {}",
         cert_bytes.len(),
         url

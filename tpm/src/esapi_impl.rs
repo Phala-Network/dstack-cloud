@@ -9,7 +9,7 @@
 
 use anyhow::{bail, Context as _, Result};
 use std::convert::TryFrom;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 use tss_esapi::{
     abstraction::nv,
     constants::SessionType,
@@ -133,7 +133,7 @@ impl EsapiContext {
             offset = chunk_end as u16;
         }
 
-        info!("wrote {} bytes to NV index 0x{:08x}", data.len(), index);
+        debug!("wrote {} bytes to NV index 0x{:08x}", data.len(), index);
         Ok(true)
     }
 
@@ -168,7 +168,7 @@ impl EsapiContext {
             ctx.nv_define_space(Provision::Owner, None, nv_public)
         }) {
             Ok(_) => {
-                info!("defined NV index 0x{:08x} with size {}", index, size);
+                debug!("defined NV index 0x{:08x} with size {}", index, size);
                 Ok(true)
             }
             Err(e) => {
@@ -200,7 +200,7 @@ impl EsapiContext {
             .execute_with_nullauth_session(|ctx| ctx.nv_undefine_space(Provision::Owner, nv_idx))
         {
             Ok(_) => {
-                info!("undefined NV index 0x{:08x}", index);
+                debug!("undefined NV index 0x{:08x}", index);
                 Ok(true)
             }
             Err(e) => {
@@ -287,7 +287,7 @@ impl EsapiContext {
             .execute_with_nullauth_session(|ctx| ctx.pcr_extend(pcr_handle, digest_values))
             .with_context(|| format!("failed to extend PCR {} with {}", pcr, bank))?;
 
-        info!("extended PCR {} with {} hash", pcr, bank);
+        debug!("extended PCR {} with {} hash", pcr, bank);
         Ok(())
     }
 
@@ -379,7 +379,7 @@ impl EsapiContext {
             })
             .context("failed to create primary key")?;
 
-        info!("created primary key in owner hierarchy");
+        debug!("created primary key in owner hierarchy");
         Ok(primary_key.key_handle)
     }
 
@@ -400,7 +400,7 @@ impl EsapiContext {
             })
             .context("failed to make key persistent")?;
 
-        info!("made key persistent at 0x{:08x}", persistent_handle);
+        debug!("made key persistent at 0x{:08x}", persistent_handle);
         Ok(true)
     }
 
@@ -410,7 +410,7 @@ impl EsapiContext {
             return Ok(true);
         }
 
-        info!("creating TPM primary key at 0x{:08x}...", handle);
+        debug!("creating TPM primary key at 0x{:08x}...", handle);
         let transient = self.create_primary()?;
         self.evict_control(transient, handle)
     }
@@ -541,7 +541,7 @@ impl EsapiContext {
             })
             .context("failed to seal data")?;
 
-        info!("sealed {} bytes to TPM with PCR policy", data.len());
+        debug!("sealed {} bytes to TPM with PCR policy", data.len());
 
         // Marshal public and private parts
         let pub_bytes = create_result
@@ -652,7 +652,7 @@ impl EsapiContext {
             .context("failed to flush policy session")?;
 
         let data = unsealed.to_vec();
-        info!("unsealed {} bytes from TPM", data.len());
+        debug!("unsealed {} bytes from TPM", data.len());
 
         Ok(data)
     }

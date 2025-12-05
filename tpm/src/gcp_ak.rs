@@ -4,7 +4,7 @@
 //! pre-provisioned Attestation Key using the TSS2 ESAPI.
 
 use anyhow::{Context as _, Result};
-use tracing::info;
+use tracing::debug;
 use tss_esapi::{
     handles::{KeyHandle, NvIndexTpmHandle, TpmHandle},
     interface_types::resource_handles::{Hierarchy, NvAuth},
@@ -40,7 +40,7 @@ pub mod gcp_nv_index {
 /// - `Ok((TssContext, KeyHandle))` - TSS context and handle to the loaded AK
 /// - `Err(_)` - Failed to load AK (not on GCP vTPM, or access error)
 pub fn load_gcp_ak_ecc(tcti_path: Option<&str>) -> Result<(TssContext, KeyHandle)> {
-    info!("loading GCP pre-provisioned ECC AK with tss-esapi...");
+    debug!("loading GCP pre-provisioned ECC AK with tss-esapi...");
 
     // Create TSS context
     use std::str::FromStr;
@@ -55,7 +55,7 @@ pub fn load_gcp_ak_ecc(tcti_path: Option<&str>) -> Result<(TssContext, KeyHandle
     let template_bytes = read_nv_data(&mut context, gcp_nv_index::AK_ECC_TEMPLATE)
         .context("failed to read ECC AK template from NV 0x01C10003")?;
 
-    info!(
+    debug!(
         "read ECC AK template from NV: {} bytes",
         template_bytes.len()
     );
@@ -72,7 +72,7 @@ pub fn load_gcp_ak_ecc(tcti_path: Option<&str>) -> Result<(TssContext, KeyHandle
         .context("failed to create primary ECC AK")?
         .key_handle;
 
-    info!("✓ successfully loaded GCP pre-provisioned ECC AK (handle: {ak_handle:?})");
+    debug!("✓ successfully loaded GCP pre-provisioned ECC AK (handle: {ak_handle:?})");
 
     Ok((context, ak_handle))
 }
@@ -91,7 +91,7 @@ pub fn load_gcp_ak_ecc(tcti_path: Option<&str>) -> Result<(TssContext, KeyHandle
 /// - `Ok((TssContext, KeyHandle))` - TSS context and handle to the loaded AK
 /// - `Err(_)` - Failed to load AK (not on GCP vTPM, or access error)
 pub fn load_gcp_ak_rsa(tcti_path: Option<&str>) -> Result<(TssContext, KeyHandle)> {
-    info!("loading GCP pre-provisioned RSA AK with tss-esapi...");
+    debug!("loading GCP pre-provisioned RSA AK with tss-esapi...");
 
     // Create TSS context
     use std::str::FromStr;
@@ -107,7 +107,7 @@ pub fn load_gcp_ak_rsa(tcti_path: Option<&str>) -> Result<(TssContext, KeyHandle
     let template_bytes = read_nv_data(&mut context, gcp_nv_index::AK_RSA_TEMPLATE)
         .context("failed to read AK template from NV 0x01C10001")?;
 
-    info!("read AK template from NV: {} bytes", template_bytes.len());
+    debug!("read AK template from NV: {} bytes", template_bytes.len());
 
     // Parse template as TPM2B_PUBLIC
     let public = Public::unmarshall(&template_bytes)
@@ -129,7 +129,7 @@ pub fn load_gcp_ak_rsa(tcti_path: Option<&str>) -> Result<(TssContext, KeyHandle
         .context("failed to create primary AK")?
         .key_handle;
 
-    info!("✓ successfully loaded GCP pre-provisioned AK (handle: {ak_handle:?})");
+    debug!("✓ successfully loaded GCP pre-provisioned AK (handle: {ak_handle:?})");
 
     Ok((context, ak_handle))
 }
@@ -210,7 +210,7 @@ pub fn create_quote_with_gcp_ak_algo(
     use tss_esapi::structures::{Data, PcrSelectionListBuilder, PcrSlot, SignatureScheme};
     use tss_esapi::traits::Marshall;
 
-    info!("generating TPM quote with GCP pre-provisioned AK...");
+    debug!("generating TPM quote with GCP pre-provisioned AK...");
 
     // Load GCP pre-provisioned AK based on algorithm preference
     let (mut context, ak_handle, ak_cert_nv_index) = match key_algo {
@@ -218,13 +218,13 @@ pub fn create_quote_with_gcp_ak_algo(
             // Try ECC first (better performance), fallback to RSA
             match load_gcp_ak_ecc(tcti_path) {
                 Ok((ctx, handle)) => {
-                    info!("✓ using ECC AK for quote");
+                    debug!("✓ using ECC AK for quote");
                     (ctx, handle, gcp_nv_index::AK_ECC_CERT)
                 }
                 Err(e) => {
-                    info!("ECC AK not available, falling back to RSA: {}", e);
+                    debug!("ECC AK not available, falling back to RSA: {}", e);
                     let (ctx, handle) = load_gcp_ak_rsa(tcti_path)?;
-                    info!("✓ using RSA AK for quote");
+                    debug!("✓ using RSA AK for quote");
                     (ctx, handle, gcp_nv_index::AK_RSA_CERT)
                 }
             }
@@ -234,13 +234,13 @@ pub fn create_quote_with_gcp_ak_algo(
             let (ctx, handle) = load_gcp_ak_ecc(tcti_path).context(
                 "failed to load ECC AK (use --key-algo=rsa or --key-algo=auto for fallback)",
             )?;
-            info!("✓ using ECC AK for quote");
+            debug!("✓ using ECC AK for quote");
             (ctx, handle, gcp_nv_index::AK_ECC_CERT)
         }
         KeyAlgorithm::Rsa => {
             // Use RSA only
             let (ctx, handle) = load_gcp_ak_rsa(tcti_path).context("failed to load RSA AK")?;
-            info!("✓ using RSA AK for quote");
+            debug!("✓ using RSA AK for quote");
             (ctx, handle, gcp_nv_index::AK_RSA_CERT)
         }
     };
@@ -277,7 +277,7 @@ pub fn create_quote_with_gcp_ak_algo(
     let signing_scheme = SignatureScheme::Null;
 
     // Generate quote
-    info!("calling TPM Quote command...");
+    debug!("calling TPM Quote command...");
     let (attest, signature) = context
         .execute_with_nullauth_session(|ctx| {
             ctx.quote(
@@ -289,7 +289,7 @@ pub fn create_quote_with_gcp_ak_algo(
         })
         .context("failed to generate quote")?;
 
-    info!("✓ quote generated successfully");
+    debug!("✓ quote generated successfully");
 
     // Marshall attest structure to bytes (TPMS_ATTEST)
     let message = attest.marshall().context("failed to marshall attest")?;
@@ -330,7 +330,7 @@ pub fn create_quote_with_gcp_ak_algo(
     let ak_cert = read_nv_data(&mut context, ak_cert_nv_index)
         .context("failed to read AK certificate from NV")?;
 
-    info!(
+    debug!(
         "✓ AK certificate read from NV 0x{:08x}: {} bytes",
         ak_cert_nv_index,
         ak_cert.len()

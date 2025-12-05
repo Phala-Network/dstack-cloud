@@ -12,7 +12,7 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_human_bytes as hex_bytes;
 use std::path::Path;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 mod esapi_impl;
 use esapi_impl::EsapiContext;
@@ -271,9 +271,9 @@ impl TpmContext {
             .and_then(|mut ctx| ctx.pcr_read(selection))
         {
             Ok(values) => {
-                info!("PCR values ({}):", selection.to_arg());
+                debug!("PCR values ({}):", selection.to_arg());
                 for pv in values {
-                    info!("  PCR[{}] = {}", pv.index, hex::encode(&pv.value));
+                    debug!("  PCR[{}] = {}", pv.index, hex::encode(&pv.value));
                 }
             }
             Err(e) => {
@@ -319,7 +319,7 @@ impl TpmContext {
         // Write sealed blob to NV
         ctx.nv_write(nv_index, &sealed_blob.data)?;
 
-        info!("sealed data to NV index 0x{:08x}", nv_index);
+        debug!("sealed data to NV index 0x{:08x}", nv_index);
         Ok(())
     }
 
@@ -345,7 +345,7 @@ impl TpmContext {
         // Unseal data
         let data = ctx.unseal(&pub_bytes, &priv_bytes, parent_handle, pcr_selection)?;
 
-        info!("unsealed data from NV index 0x{:08x}", nv_index);
+        debug!("unsealed data from NV index 0x{:08x}", nv_index);
         Ok(Some(data))
     }
 
@@ -413,7 +413,7 @@ impl TpmContext {
         let mut ctx = self.create_esapi_context()?;
 
         if let Some(cert) = ctx.nv_read(AK_RSA_CERT_NV_INDEX)? {
-            info!(
+            debug!(
                 "read AK certificate from NV index 0x{:08x} ({} bytes)",
                 AK_RSA_CERT_NV_INDEX,
                 cert.len()
@@ -422,7 +422,7 @@ impl TpmContext {
         }
 
         if let Some(cert) = ctx.nv_read(AK_ECC_CERT_NV_INDEX)? {
-            info!(
+            debug!(
                 "read AK certificate from NV index 0x{:08x} ({} bytes)",
                 AK_ECC_CERT_NV_INDEX,
                 cert.len()
