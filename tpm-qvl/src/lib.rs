@@ -15,6 +15,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// GCP TPM Root CA certificate (embedded, valid 2022-2122)
+///
+/// Subject: CN=EK/AK CA Root, OU=Google Cloud, O=Google LLC, L=Mountain View, ST=California, C=US
+/// Valid: 2022-07-08 to 2122-07-08 (100 years)
+pub const GCP_ROOT_CA: &str = include_str!("../certs/gcp-root-ca.pem");
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuoteCollateral {
     /// Intermediate certificate chain (PEM format) from device
