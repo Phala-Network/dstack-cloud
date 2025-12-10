@@ -412,11 +412,11 @@ impl CvmVerifier {
             AttestationMode::Tdx => {
                 self.verify_tdx(request, attestation, &vm_config, debug, details).await
             }
-            AttestationMode::VTpm => {
-                self.verify_vtpm(request, attestation, &vm_config, debug, details).await
+            AttestationMode::Tpm => {
+                self.verify_tpm(request, attestation, &vm_config, debug, details).await
             }
-            AttestationMode::TdxVtpm => {
-                self.verify_tdx_vtpm(request, attestation, &vm_config, debug, details).await
+            AttestationMode::TdxTpm => {
+                self.verify_tdx_tpm(request, attestation, &vm_config, debug, details).await
             }
         }
     }
@@ -628,8 +628,8 @@ impl CvmVerifier {
         }
     }
 
-    /// Verify vTPM-only attestation
-    async fn verify_vtpm(
+    /// Verify TPM-only attestation
+    async fn verify_tpm(
         &self,
         _request: &VerificationRequest,
         attestation: Attestation,
@@ -669,8 +669,8 @@ impl CvmVerifier {
         })
     }
 
-    /// Verify dual-mode attestation (TDX + vTPM)
-    async fn verify_tdx_vtpm(
+    /// Verify dual-mode attestation (TDX + TPM)
+    async fn verify_tdx_tpm(
         &self,
         request: &VerificationRequest,
         attestation: Attestation,
@@ -714,7 +714,7 @@ impl CvmVerifier {
         let tpm_data = attestation
             .tpm_data
             .as_ref()
-            .context("TPM quote data not found in TdxVtpm attestation")?;
+            .context("TPM quote data not found in TdxTpm attestation")?;
 
         if let Err(e) = self.verify_tpm_quote(tpm_data).await {
             return Ok(VerificationResponse {
@@ -760,7 +760,7 @@ impl CvmVerifier {
 
     /// Verify TPM quote signature and AK certificate chain
     async fn verify_tpm_quote(&self, tpm_data: &TpmQuoteData) -> Result<()> {
-        use tpm_qvl::{verify_quote, get_root_ca, QuoteCollateral};
+        use tpm_qvl::{verify_quote, get_root_ca, get_collateral};
         use tpm_attest::{PcrValue, TpmQuote};
 
         // Prepare TpmQuote structure
@@ -780,17 +780,13 @@ impl CvmVerifier {
             qualifying_data: tpm_data.qualifying_data.clone(),
         };
 
-        // TODO: Extract collateral from AK cert chain
-        // For now, use empty collateral (assumes AK cert is self-signed or we skip CRL checks)
-        let collateral = QuoteCollateral {
-            cert_chain_pem: String::new(),
-            crls: vec![],
-            root_ca_crl: None,
-        };
-
         // Get root CA based on platform
         let root_ca = get_root_ca(tpm_data.platform)
             .with_context(|| format!("Failed to get root CA for platform: {:?}", tpm_data.platform))?;
+
+        // Extract collateral from AK cert chain (downloads intermediate certs and CRLs)
+        let collateral = get_collateral(&quote, root_ca)
+            .context("Failed to get collateral from AK certificate chain")?;
 
         verify_quote(&quote, &collateral, root_ca)
             .map_err(|e| anyhow!("TPM quote verification failed: {e}"))?;
