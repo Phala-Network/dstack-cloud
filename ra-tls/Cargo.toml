@@ -35,3 +35,9 @@ cc-eventlog.workspace = true
 serde-human-bytes.workspace = true
 flate2.workspace = true
 or-panic.workspace = true
+rand.workspace = true
+tpm-attest = { workspace = true, optional = true }
+
+[features]
+default = []
+vtpm-quote = ["dep:tpm-attest"]
