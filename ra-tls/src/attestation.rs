@@ -56,12 +56,31 @@ impl AttestationMode {
 
     /// Detect attestation mode from system
     pub fn detect() -> Result<Self> {
+        // First, try to detect platform from DMI board name
+        if let Ok(board_name) = std::fs::read_to_string("/sys/class/dmi/id/board_name") {
+            let board_name = board_name.trim();
+            match board_name {
+                "dstack" => {
+                    // dstack platform: TDX only (no vTPM)
+                    return Ok(Self::Tdx);
+                }
+                "Google Compute Engine" => {
+                    // GCP platform: TDX + vTPM dual mode
+                    return Ok(Self::TdxVtpm);
+                }
+                _ => {
+                    // Unknown board name, fall through to device detection
+                }
+            }
+        }
+
+        // Fallback: detect from available devices
         let has_tdx = std::path::Path::new("/dev/tdx_guest").exists();
         let has_vtpm = std::path::Path::new("/dev/tpmrm0").exists()
             || std::path::Path::new("/dev/tpm0").exists();
 
         match (has_tdx, has_vtpm) {
-            (true, true) => Ok(Self::TdxVtpm),  // Both available (GCP TDX)
+            (true, true) => Ok(Self::TdxVtpm),  // Both available
             (true, false) => Ok(Self::Tdx),     // TDX only
             (false, true) => Ok(Self::VTpm),    // vTPM only
             (false, false) => bail!("No attestation device found"),
