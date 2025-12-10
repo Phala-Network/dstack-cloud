@@ -27,11 +27,11 @@ use serde_human_bytes as hex_bytes;
 pub enum AttestationMode {
     /// Intel TDX with DCAP quote only
     Tdx,
-    /// vTPM with TPM 2.0 quote only
-    VTpm,
-    /// Both TDX and vTPM (GCP TDX with vTPM)
-    #[serde(rename = "tdx+vtpm")]
-    TdxVtpm,
+    /// TPM 2.0 quote only
+    Tpm,
+    /// Both TDX and TPM (dual mode)
+    #[serde(rename = "tdx+tpm")]
+    TdxTpm,
 }
 
 impl AttestationMode {
@@ -39,8 +39,8 @@ impl AttestationMode {
     pub fn as_str(&self) -> &str {
         match self {
             Self::Tdx => "tdx",
-            Self::VTpm => "vtpm",
-            Self::TdxVtpm => "tdx+vtpm",
+            Self::Tpm => "tpm",
+            Self::TdxTpm => "tdx+tpm",
         }
     }
 
@@ -48,8 +48,8 @@ impl AttestationMode {
     pub fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
             "tdx" => Ok(Self::Tdx),
-            "vtpm" => Ok(Self::VTpm),
-            "tdx+vtpm" | "tdxvtpm" => Ok(Self::TdxVtpm),
+            "tpm" | "vtpm" => Ok(Self::Tpm),  // Support both for compatibility
+            "tdx+tpm" | "tdxtpm" | "tdx+vtpm" | "tdxvtpm" => Ok(Self::TdxTpm),  // Support old names
             _ => bail!("Invalid attestation mode: {}", s),
         }
     }
@@ -61,12 +61,12 @@ impl AttestationMode {
             let board_name = board_name.trim();
             match board_name {
                 "dstack" => {
-                    // dstack platform: TDX only (no vTPM)
+                    // dstack platform: TDX only (no TPM)
                     return Ok(Self::Tdx);
                 }
                 "Google Compute Engine" => {
-                    // GCP platform: TDX + vTPM dual mode
-                    return Ok(Self::TdxVtpm);
+                    // GCP platform: TDX + TPM dual mode
+                    return Ok(Self::TdxTpm);
                 }
                 _ => {
                     // Unknown board name, fall through to device detection
@@ -76,25 +76,25 @@ impl AttestationMode {
 
         // Fallback: detect from available devices
         let has_tdx = std::path::Path::new("/dev/tdx_guest").exists();
-        let has_vtpm = std::path::Path::new("/dev/tpmrm0").exists()
+        let has_tpm = std::path::Path::new("/dev/tpmrm0").exists()
             || std::path::Path::new("/dev/tpm0").exists();
 
-        match (has_tdx, has_vtpm) {
-            (true, true) => Ok(Self::TdxVtpm),  // Both available
-            (true, false) => Ok(Self::Tdx),     // TDX only
-            (false, true) => Ok(Self::VTpm),    // vTPM only
+        match (has_tdx, has_tpm) {
+            (true, true) => Ok(Self::TdxTpm),  // Both available
+            (true, false) => Ok(Self::Tdx),    // TDX only
+            (false, true) => Ok(Self::Tpm),    // TPM only
             (false, false) => bail!("No attestation device found"),
         }
     }
 
     /// Check if TDX quote is included
     pub fn has_tdx(&self) -> bool {
-        matches!(self, Self::Tdx | Self::TdxVtpm)
+        matches!(self, Self::Tdx | Self::TdxTpm)
     }
 
-    /// Check if vTPM quote is included
-    pub fn has_vtpm(&self) -> bool {
-        matches!(self, Self::VTpm | Self::TdxVtpm)
+    /// Check if TPM quote is included
+    pub fn has_tpm(&self) -> bool {
+        matches!(self, Self::Tpm | Self::TdxTpm)
     }
 }
 
@@ -180,7 +180,7 @@ pub struct PcrValue {
     pub value: Vec<u8>,
 }
 
-/// TPM Quote data (for vTPM mode)
+/// TPM Quote data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TpmQuoteData {
     /// TPM Quote message (TPMS_ATTEST)
@@ -215,7 +215,7 @@ pub struct Attestation<R = ()> {
     /// Quote (TDX Quote or TPM Quote message)
     pub quote: Vec<u8>,
 
-    /// Raw event log (TDX event log or empty for vTPM)
+    /// Raw event log (TDX event log or empty for TPM mode)
     pub raw_event_log: Vec<u8>,
 
     /// Event log (TDX specific)
@@ -224,7 +224,7 @@ pub struct Attestation<R = ()> {
     /// Verified report
     pub report: R,
 
-    /// TPM specific data (only for vTPM mode)
+    /// TPM specific data (only for TPM mode)
     pub tpm_data: Option<TpmQuoteData>,
 }
 
@@ -363,8 +363,8 @@ impl Attestation {
         let mode = AttestationMode::detect()?;
         match mode {
             AttestationMode::Tdx => Self::local_tdx(),
-            AttestationMode::VTpm => Self::local_vtpm(),
-            AttestationMode::TdxVtpm => Self::local_tdx_vtpm(),
+            AttestationMode::Tpm => Self::local_tpm(),
+            AttestationMode::TdxTpm => Self::local_tdx_tpm(),
         }
     }
 
@@ -385,12 +385,12 @@ impl Attestation {
         })
     }
 
-    /// Create vTPM attestation only
-    #[cfg(feature = "vtpm-quote")]
-    fn local_vtpm() -> Result<Self> {
-        let tpm_data = Self::collect_vtpm_quote(&[0, 2, 4, 7])?;
+    /// Create TPM attestation only
+    #[cfg(feature = "tpm-quote")]
+    fn local_tpm() -> Result<Self> {
+        let tpm_data = Self::collect_tpm_quote(&[0, 2, 4, 7])?;
         Ok(Self {
-            mode: AttestationMode::VTpm,
+            mode: AttestationMode::Tpm,
             quote: tpm_data.message.clone(),
             raw_event_log: vec![],
             event_log: vec![],
@@ -399,15 +399,15 @@ impl Attestation {
         })
     }
 
-    /// Create vTPM attestation only (without vtpm-quote feature)
-    #[cfg(not(feature = "vtpm-quote"))]
-    fn local_vtpm() -> Result<Self> {
-        bail!("vTPM quote collection requires 'vtpm-quote' feature")
+    /// Create TPM attestation only (without tpm-quote feature)
+    #[cfg(not(feature = "tpm-quote"))]
+    fn local_tpm() -> Result<Self> {
+        bail!("TPM quote collection requires 'tpm-quote' feature")
     }
 
-    /// Create both TDX and vTPM attestation (GCP TDX)
-    #[cfg(feature = "vtpm-quote")]
-    fn local_tdx_vtpm() -> Result<Self> {
+    /// Create both TDX and TPM attestation (dual mode)
+    #[cfg(feature = "tpm-quote")]
+    fn local_tdx_tpm() -> Result<Self> {
         // Get TDX quote and event log
         let quote = tdx_attest::get_quote(&[0u8; 64]).context("Failed to get TDX quote")?;
         let event_log =
@@ -415,11 +415,11 @@ impl Attestation {
         let raw_event_log =
             serde_json::to_vec(&event_log).context("Failed to serialize event log")?;
 
-        // Get vTPM quote
-        let tpm_data = Self::collect_vtpm_quote(&[0, 2, 4, 7])?;
+        // Get TPM quote
+        let tpm_data = Self::collect_tpm_quote(&[0, 2, 4, 7])?;
 
         Ok(Self {
-            mode: AttestationMode::TdxVtpm,
+            mode: AttestationMode::TdxTpm,
             quote,
             raw_event_log,
             event_log,
@@ -428,15 +428,15 @@ impl Attestation {
         })
     }
 
-    /// Create both TDX and vTPM attestation (without vtpm-quote feature)
-    #[cfg(not(feature = "vtpm-quote"))]
-    fn local_tdx_vtpm() -> Result<Self> {
-        bail!("vTPM quote collection requires 'vtpm-quote' feature")
+    /// Create both TDX and TPM attestation (without tpm-quote feature)
+    #[cfg(not(feature = "tpm-quote"))]
+    fn local_tdx_tpm() -> Result<Self> {
+        bail!("TPM quote collection requires 'tpm-quote' feature")
     }
 
-    /// Collect vTPM quote with specified PCR indices
-    #[cfg(feature = "vtpm-quote")]
-    fn collect_vtpm_quote(pcr_indices: &[u32]) -> Result<TpmQuoteData> {
+    /// Collect TPM quote with specified PCR indices
+    #[cfg(feature = "tpm-quote")]
+    fn collect_tpm_quote(pcr_indices: &[u32]) -> Result<TpmQuoteData> {
         use tpm_attest::{TpmContext, PcrSelection};
 
         // Generate nonce for replay protection (32 bytes random)
@@ -449,9 +449,9 @@ impl Attestation {
         // Create PCR selection
         let pcr_sel = PcrSelection::sha256(pcr_indices);
 
-        // Generate quote using GCP pre-provisioned AK
+        // Generate quote using pre-provisioned AK
         let quote = tpm_ctx.create_quote(&nonce, &pcr_sel)
-            .context("Failed to create TPM quote with GCP AK")?;
+            .context("Failed to create TPM quote")?;
 
         // Convert tpm-attest format to ra-tls format
         let pcr_values = quote.pcr_values.iter().map(|p| PcrValue {
@@ -469,7 +469,7 @@ impl Attestation {
     }
 
     /// Generate cryptographic nonce for replay protection
-    #[cfg(feature = "vtpm-quote")]
+    #[cfg(feature = "tpm-quote")]
     fn generate_nonce() -> Result<Vec<u8>> {
         use rand::RngCore;
         let mut nonce = vec![0u8; 32];
@@ -514,12 +514,12 @@ impl Attestation {
         } else {
             // Backward compatibility: if no mode specified, check which quote type exists
             let has_tdx = get_ext(oids::PHALA_RATLS_QUOTE)?.is_some();
-            let has_vtpm = get_ext(oids::PHALA_RATLS_TPM_QUOTE)?.is_some();
+            let has_tpm = get_ext(oids::PHALA_RATLS_TPM_QUOTE)?.is_some();
 
-            match (has_tdx, has_vtpm) {
-                (true, true) => AttestationMode::TdxVtpm,
+            match (has_tdx, has_tpm) {
+                (true, true) => AttestationMode::TdxTpm,
                 (true, false) => AttestationMode::Tdx,
-                (false, true) => AttestationMode::VTpm,
+                (false, true) => AttestationMode::Tpm,
                 (false, false) => return Ok(None),
             }
         };
@@ -535,7 +535,7 @@ impl Attestation {
                 attestation.mode = AttestationMode::Tdx;
                 Ok(Some(attestation))
             }
-            AttestationMode::VTpm => {
+            AttestationMode::Tpm => {
                 let tpm_quote_json = match get_ext(oids::PHALA_RATLS_TPM_QUOTE)? {
                     Some(v) => v,
                     None => return Ok(None),
@@ -544,7 +544,7 @@ impl Attestation {
                     .context("Failed to parse TPM quote data")?;
 
                 Ok(Some(Self {
-                    mode: AttestationMode::VTpm,
+                    mode: AttestationMode::Tpm,
                     quote: tpm_data.message.clone(),
                     raw_event_log: vec![],
                     event_log: vec![],
@@ -552,23 +552,23 @@ impl Attestation {
                     tpm_data: Some(tpm_data),
                 }))
             }
-            AttestationMode::TdxVtpm => {
-                // Both TDX and vTPM quotes
+            AttestationMode::TdxTpm => {
+                // Both TDX and TPM quotes
                 let tdx_quote = match get_ext(oids::PHALA_RATLS_QUOTE)? {
                     Some(v) => v,
-                    None => bail!("TDX quote missing in TdxVtpm mode"),
+                    None => bail!("TDX quote missing in TdxTpm mode"),
                 };
                 let raw_event_log = get_ext(oids::PHALA_RATLS_EVENT_LOG)?.unwrap_or_default();
 
                 let tpm_quote_json = match get_ext(oids::PHALA_RATLS_TPM_QUOTE)? {
                     Some(v) => v,
-                    None => bail!("TPM quote missing in TdxVtpm mode"),
+                    None => bail!("TPM quote missing in TdxTpm mode"),
                 };
                 let tpm_data: TpmQuoteData = serde_json::from_slice(&tpm_quote_json)
                     .context("Failed to parse TPM quote data")?;
 
                 let mut attestation = Self::new(tdx_quote, raw_event_log)?;
-                attestation.mode = AttestationMode::TdxVtpm;
+                attestation.mode = AttestationMode::TdxTpm;
                 attestation.tpm_data = Some(tpm_data);
                 Ok(Some(attestation))
             }

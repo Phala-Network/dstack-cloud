@@ -40,4 +40,4 @@ tpm-attest = { workspace = true, optional = true }
 
 [features]
 default = []
-vtpm-quote = ["dep:tpm-attest"]
+tpm-quote = ["dep:tpm-attest"]

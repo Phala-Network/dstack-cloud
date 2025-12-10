@@ -29,7 +29,7 @@ rinja.workspace = true
 git-version.workspace = true
 ra-rpc = { workspace = true, features = ["client", "rocket"] }
 dstack-guest-agent-rpc.workspace = true
-ra-tls = { workspace = true, features = ["vtpm-quote"] }
+ra-tls = { workspace = true, features = ["tpm-quote"] }
 tdx-attest.workspace = true
 tpm-attest.workspace = true
 guest-api = { workspace = true, features = ["client"] }
