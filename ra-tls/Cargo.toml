@@ -37,6 +37,7 @@ flate2.workspace = true
 or-panic.workspace = true
 rand.workspace = true
 tpm-attest = { workspace = true, optional = true }
+dstack-types.workspace = true
 
 [features]
 default = []

@@ -13,13 +13,23 @@
 //!
 //! This crate is designed to run on the verifier side, while tpm-attest runs on the device side.
 
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use dstack_types::Platform;
 
 /// GCP TPM Root CA certificate (embedded, valid 2022-2122)
 ///
 /// Subject: CN=EK/AK CA Root, OU=Google Cloud, O=Google LLC, L=Mountain View, ST=California, C=US
 /// Valid: 2022-07-08 to 2122-07-08 (100 years)
 pub const GCP_ROOT_CA: &str = include_str!("../certs/gcp-root-ca.pem");
+
+/// Get TPM root CA certificate for the given platform
+pub fn get_root_ca(platform: Platform) -> Result<&'static str> {
+    match platform {
+        Platform::Gcp => Ok(GCP_ROOT_CA),
+        Platform::Dstack => bail!("dstack platform does not use TPM attestation"),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuoteCollateral {

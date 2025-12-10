@@ -49,8 +49,8 @@ impl AttestationMode {
         match s.to_lowercase().as_str() {
             "tdx" => Ok(Self::Tdx),
             "tpm" => Ok(Self::Tpm),
-            "tdx+tpm" | "tdxtpm" => Ok(Self::TdxTpm),
-            _ => bail!("Invalid attestation mode: {}", s),
+            "tdx+tpm" => Ok(Self::TdxTpm),
+            _ => bail!("Invalid attestation mode: {s}"),
         }
     }
 
@@ -201,6 +201,9 @@ pub struct TpmQuoteData {
     /// Qualifying data (nonce) used in quote
     #[serde(with = "hex_bytes")]
     pub qualifying_data: Vec<u8>,
+
+    /// Platform where quote was generated
+    pub platform: dstack_types::Platform,
 }
 
 /// Represents a verified attestation
@@ -465,6 +468,7 @@ impl Attestation {
             pcr_values,
             ak_cert: quote.ak_cert,
             qualifying_data: quote.qualifying_data,
+            platform: dstack_types::Platform::detect(),
         })
     }
 

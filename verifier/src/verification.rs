@@ -760,7 +760,7 @@ impl CvmVerifier {
 
     /// Verify TPM quote signature and AK certificate chain
     async fn verify_tpm_quote(&self, tpm_data: &TpmQuoteData) -> Result<()> {
-        use tpm_qvl::{verify_quote, QuoteCollateral, GCP_ROOT_CA};
+        use tpm_qvl::{verify_quote, get_root_ca, QuoteCollateral};
         use tpm_attest::{PcrValue, TpmQuote};
 
         // Prepare TpmQuote structure
@@ -788,11 +788,14 @@ impl CvmVerifier {
             root_ca_crl: None,
         };
 
-        // Use embedded GCP root CA from tpm-qvl
-        verify_quote(&quote, &collateral, GCP_ROOT_CA)
+        // Get root CA based on platform
+        let root_ca = get_root_ca(tpm_data.platform)
+            .with_context(|| format!("Failed to get root CA for platform: {:?}", tpm_data.platform))?;
+
+        verify_quote(&quote, &collateral, root_ca)
             .map_err(|e| anyhow!("TPM quote verification failed: {e}"))?;
 
-        info!("✓ TPM quote signature and AK certificate verified");
+        info!("✓ TPM quote signature and AK certificate verified (platform: {})", tpm_data.platform.as_str());
         Ok(())
     }
 

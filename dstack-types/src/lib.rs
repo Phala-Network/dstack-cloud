@@ -260,3 +260,36 @@ pub fn dstack_agent_address() -> String {
     }
     "unix:/var/run/dstack.sock".into()
 }
+
+/// Hardware/Cloud Platform
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Platform {
+    /// dstack native platform
+    Dstack,
+    /// Google Cloud Platform
+    Gcp,
+}
+
+impl Platform {
+    /// Detect platform from system DMI information
+    pub fn detect() -> Self {
+        if let Ok(board_name) = std::fs::read_to_string("/sys/class/dmi/id/board_name") {
+            match board_name.trim() {
+                "dstack" => return Self::Dstack,
+                "Google Compute Engine" => return Self::Gcp,
+                _ => {}
+            }
+        }
+        // Default to dstack if cannot detect
+        Self::Dstack
+    }
+
+    /// Get platform name as string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Dstack => "dstack",
+            Self::Gcp => "gcp",
+        }
+    }
+}
