@@ -48,8 +48,8 @@ impl AttestationMode {
     pub fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
             "tdx" => Ok(Self::Tdx),
-            "tpm" | "vtpm" => Ok(Self::Tpm),  // Support both for compatibility
-            "tdx+tpm" | "tdxtpm" | "tdx+vtpm" | "tdxvtpm" => Ok(Self::TdxTpm),  // Support old names
+            "tpm" => Ok(Self::Tpm),
+            "tdx+tpm" | "tdxtpm" => Ok(Self::TdxTpm),
             _ => bail!("Invalid attestation mode: {}", s),
         }
     }
