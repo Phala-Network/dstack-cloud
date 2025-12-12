@@ -34,6 +34,9 @@ pub struct TpmQuote {
 
     /// Platform where quote was generated
     pub platform: Platform,
+
+    /// Event Log (optional, used for PCR replay verification)
+    pub event_log: Vec<TpmEvent>,
 }
 
 /// PCR (Platform Configuration Register) value
@@ -87,3 +90,6 @@ impl Default for PcrSelection {
         Self::sha256(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
     }
 }
+
+// Re-export TPM Event types from cc-eventlog
+pub use cc_eventlog::tpm::{TpmEvent, TpmEventLog};

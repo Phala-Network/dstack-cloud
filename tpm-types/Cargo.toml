@@ -14,3 +14,4 @@ serde = { workspace = true, features = ["derive"] }
 serde-human-bytes.workspace = true
 dstack-types.workspace = true
 scale = { workspace = true, features = ["derive"] }
+cc-eventlog.workspace = true

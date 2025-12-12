@@ -101,44 +101,77 @@ print(f"PCR 0: {pcr0.hex()}")
 # Expected: 0cca9ec161b09288802e5a112255d21340ed5b797f5fe29cecccfd8f67b9f802
 ```
 
-## PCR 2: UEFI Drivers and Bootloader Binary
+## PCR 2: UEFI Drivers and Boot Applications
 
 ### Events Measured into PCR 2
 
 ```
 Event 22: EV_SEPARATOR                     - End of firmware phase
-          Digest: df3f619804a92fdb4057192dc43dd748...
+          Digest: df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119
 
-Event 27: EV_EFI_GPT_EVENT                 - GPT partition table
-          Digest: 00b8a357e652623798d1bbd16c375ec9...
+Event 27: EV_EFI_GPT_EVENT                 - GPT partition table (UEFI_GPT_DATA structure)
+          Digest: 00b8a357e652623798d1bbd16c375ec90fbed802b4269affa3e78e6eb19386cf
+          Note: SHA256 of GPT header + partition entries, NOT raw disk sectors
 
-Event 28: EV_EFI_BOOT_SERVICES_APPLICATION - Bootloader binary (GRUB)
-          Digest: 9ab14a46f858662a89adc102d2a57a13...
+Event 28: EV_EFI_BOOT_SERVICES_APPLICATION - UKI (Unified Kernel Image)
+          Digest: 9ab14a46f858662a89adc102d2a57a13f52f75c1769d65a4c34edbbfc8855f0f
+          Note: PE/COFF Authenticode hash of dstack-uki.efi, NOT simple SHA256
 
-Event 41: EV_EFI_BOOT_SERVICES_APPLICATION - Second UEFI application
-          Digest: ade943a0a7a3189a3201ba17d7df778e...
+Event 41: EV_EFI_BOOT_SERVICES_APPLICATION - Linux kernel (from UKI .linux section)
+          Digest: ade943a0a7a3189a3201ba17d7df778eb380cbd33ce5e361176e974ccf7cdedb
+          Note: PE/COFF Authenticode hash of .linux section extracted from UKI
 ```
 
-### Key Insight: Event 28 Contains UKI Hash
+### Event 28: UKI Measurement (Primary Image Verification Point)
 
-**Event 28 is the most critical for image verification** - it contains the SHA256 hash of the UKI binary (Unified Kernel Image).
+**Event 28 is the most critical for image verification** - it measures the complete UKI binary.
 
-For dstack, this UKI contains:
-- Kernel (bzImage)
-- Initramfs (dstack-initramfs)
-- Kernel cmdline with dm-verity root hash
-- EFI stub loader
+For dstack, the UKI (dstack-uki.efi) contains:
+- systemd-stub (EFI boot stub)
+- .linux section (Linux kernel with EFI stub, ~9.6 MB)
+- .initrd section (initramfs cpio archive)
+- .cmdline section (kernel command line with dm-verity hash)
+- Other metadata sections (.osrel, .uname, .sbat)
 
-To pre-calculate this:
+**IMPORTANT: Event 28 digest is NOT simple SHA256!**
+
 ```bash
-# Hash the UKI binary from build
-sha256sum build/tmp/deploy/images/*/dstack-uki.efi
+# ❌ WRONG - This won't match Event 28
+sha256sum dstack-uki.efi
 
-# Or from deployed system
-sha256sum /path/to/dstack-uki.efi
+# ✅ CORRECT - Use PE/COFF Authenticode hash
+python3 calculate_pcr.py --build-pcr2 \
+    --bootloader dstack-uki.efi \
+    --gpt-hash 00b8a357e652623798d1bbd16c375ec90fbed802b4269affa3e78e6eb19386cf
+
+# Or calculate just the UKI hash
+python3 -c "from calculate_pcr import authenticode_hash; \
+    print(authenticode_hash('dstack-uki.efi'))"
+# Output: 9ab14a46f858662a89adc102d2a57a13f52f75c1769d65a4c34edbbfc8855f0f
 ```
 
-**Note:** This is NOT a GRUB binary. dstack uses UKI for direct UEFI boot, bypassing GRUB entirely.
+### Event 41: Linux Kernel Section (Derived from UKI)
+
+**Event 41 is automatically derived from the UKI** - no separate verification needed.
+
+After UEFI loads the UKI (Event 28), systemd-stub extracts the .linux section and
+loads it as a separate EFI application using LoadImage(). This triggers Event 41.
+
+**Security Analysis:**
+- Event 41 content (.linux section) is embedded in UKI at fixed offset (0x16e00)
+- Verifying Event 28 (UKI) implicitly verifies Event 41 (.linux section)
+- Event 41 provides defense-in-depth: even if UKI measurement is bypassed,
+  the kernel itself is still independently measured
+
+**Verification Strategy:**
+```
+Event 28 verified (UKI Authenticode hash)
+  ⟹ UKI file content verified
+  ⟹ .linux section verified (deterministic extraction from UKI)
+  ⟹ Event 41 implicitly verified
+```
+
+Therefore: **Only verify Event 28; Event 41 requires no separate golden value.**
 
 ### PCR 2 Calculation
 
@@ -149,10 +182,10 @@ pcr2 = b'\x00' * 32
 
 # Extend with all 4 events in order
 digests = [
-    "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",  # EV_SEPARATOR
-    "00b8a357e652623798d1bbd16c375ec90fbed802b4269affa3e78e6eb19386cf",  # EV_EFI_GPT_EVENT
-    "9ab14a46f858662a89adc102d2a57a13f52f75c1769d65a4c34edbbfc8855f0f",  # Bootloader
-    "ade943a0a7a3189a3201ba17d7df778e4b380cbd33ce5e361176e974ccf7cdedb", # Second app
+    "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",  # Event 22: EV_SEPARATOR
+    "00b8a357e652623798d1bbd16c375ec90fbed802b4269affa3e78e6eb19386cf",  # Event 27: EV_EFI_GPT_EVENT
+    "9ab14a46f858662a89adc102d2a57a13f52f75c1769d65a4c34edbbfc8855f0f",  # Event 28: UKI (Authenticode hash)
+    "ade943a0a7a3189a3201ba17d7df778eb380cbd33ce5e361176e974ccf7cdedb",  # Event 41: Linux kernel (Authenticode hash)
 ]
 
 for digest_hex in digests:
@@ -162,6 +195,9 @@ for digest_hex in digests:
 print(f"PCR 2: {pcr2.hex()}")
 # Expected: 1f74355f18d9aab3a26faa060d2058726554207d040c63d25d501d97f5a41e0f
 ```
+
+**Note:** The third event (Event 28, UKI measurement) is critical for image verification.
+This is GCP OVMF-specific behavior - other platforms may have different event ordering.
 
 ## PCR 4: Bootloader Actions
 
@@ -232,26 +268,29 @@ print(f"PCR 4: {pcr4.hex()}")
 
 ## Pre-calculating PCR Values for Image Verification
 
-### Step 1: Identify Component Hashes
+### Step 1: Calculate Component Hashes
 
 For PCR 0 (OVMF):
 ```bash
-# Download OVMF firmware from GCP
-wget "https://storage.googleapis.com/gce_tcb_integrity/ovmf_x64_csm/ff11d313...fd.signed"
-
-# Extract and hash (exact method TBD - may need to verify signature first)
+# PCR 0 values are fixed for GCP OVMF firmware version
+# No calculation needed - use the values from PCR 0 Calculation section above
+PCR0_EVENT3="fa129a8f82b65bcbce8f9e8e5f6de509beff9b1df33714116bf918c5a3bba45d"  # GCE Virtual Firmware v2
+PCR0_EVENT4="b20ec425e0cea851df1ae32f426cff2e4b8e50e77883b8e9890dcf5369f90e1f"  # GCE NonHostInfo
+PCR0_EVENT20="df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"  # EV_SEPARATOR
 ```
 
-For PCR 2 (Bootloader):
+For PCR 2 (UKI):
 ```bash
-# Hash your bootloader binary
-sha256sum build/tmp/deploy/images/dstack-uki/grub-efi-bootx64.efi
+# ✅ CORRECT - Use PE/COFF Authenticode hash (NOT simple SHA256!)
+python3 calculate_pcr.py --bootloader build/tmp/deploy/images/*/dstack-uki.efi
+
 ```
 
 For PCR 2 (GPT):
 ```bash
-# Extract GPT from disk image (first sector)
-dd if=disk.img bs=512 count=34 | sha256sum
+# GPT hash is calculated during disk image creation
+# This value is specific to your disk layout and needs to be extracted from testgcp
+# See Event 27 in the Event Log
 ```
 
 ### Step 2: Replay Event Log
@@ -278,44 +317,15 @@ for event_digest in event_digests:
 DSTACK_PCR_POLICY = {
     "sha256": {
         0: "0cca9ec161b09288802e5a112255d21340ed5b797f5fe29cecccfd8f67b9f802",  # OVMF v2
-        2: "1f74355f18d9aab3a26faa060d2058726554207d040c63d25d501d97f5a41e0f",  # dstack bootloader
+        2: "1f74355f18d9aab3a26faa060d2058726554207d040c63d25d501d97f5a41e0f",  # UKI + GPT
         4: "7a94ffe8a7729a566d3d3c577fcb4b6b1e671f31540375f80eae6382ab785e35",  # Boot sequence
     }
 }
+
+# Event 28 digest (UKI Authenticode hash) for comparison
+UKI_HASH = "9ab14a46f858662a89adc102d2a57a13f52f75c1769d65a4c34edbbfc8855f0f"
 ```
 
-## Verification in Practice
-
-### On Device (Prover) Side
-
-```bash
-# Generate quote with PCRs 0, 2, 4
-dstack-util tpm quote --pcr-list 0,2,4 --nonce <random> --output quote.bin
-```
-
-### On Verifier Side
-
-```python
-import tpm_qvl
-
-# Load quote
-quote = tpm_attest.TpmQuote.from_bytes(quote_data)
-
-# Get collateral (cert chain + CRLs)
-collateral = tpm_qvl.get_collateral(quote, root_ca_pem)
-
-# Verify quote
-result = tpm_qvl.verify_quote(quote, collateral, root_ca_pem)
-
-# Check PCR values match expected policy
-for pcr_idx in [0, 2, 4]:
-    actual = quote.pcr_values[pcr_idx]
-    expected = DSTACK_PCR_POLICY["sha256"][pcr_idx]
-    if actual.hex() != expected:
-        raise ValueError(f"PCR {pcr_idx} mismatch! Expected: {expected}, Got: {actual.hex()}")
-
-print("✅ System image verified!")
-```
 
 ## Limitations and Considerations
 
@@ -362,18 +372,6 @@ In this flow:
 3. No GRUB involved, so PCR 4 only contains the standard EV_EFI_ACTION event
 4. Kernel and initramfs are **already inside** the UKI, so no separate PCR 8/9 measurements
 
-#### Verification from testgcp
-
-```bash
-# Kernel cmdline shows UKI parameters
-$ cat /proc/cmdline
-console=ttyS0 init=/init ... dstack.rootfs_hash=84ce1b... dstack.rootfs_size=150958080
-
-# No /boot/efi/EFI/BOOT/ directory (no GRUB)
-$ ls /boot/efi/EFI/BOOT/
-ls: cannot access '/boot/efi/EFI/BOOT/': No such file or directory
-```
-
 #### Security Implications
 
 ✅ **This is actually BETTER for security:**
@@ -395,38 +393,6 @@ ls: cannot access '/boot/efi/EFI/BOOT/': No such file or directory
 
 **Conclusion:** For dstack, **PCR 0 + PCR 2** are sufficient and optimal for image verification.
 
-## Next Steps
-
-1. **Download and verify GCP OVMF firmware** ⏳
-   - Understand the `.fd.signed` format
-   - Extract the actual firmware binary
-   - Calculate its hash to understand PCR 0 Event 3 digest
-
-2. **UKI (Unified Kernel Image) support** ✅ Already implemented!
-   - dstack already uses UKI via `dstack-uki.bb`
-   - UKI is measured in PCR 2 as EFI application (Event 28)
-   - Kernel verification works through PCR 2
-
-3. **PCR calculation tool** ✅ Created!
-   - `calculate_pcr.py` can replay Event Log
-   - Can calculate PCR 2 from UKI hash
-   - Validated against actual testgcp values
-
-4. **Test PCR stability across reboots** ⏳
-   - Verify PCRs remain constant with same image
-   - Test what changes when image is modified
-   - Validate PCR 2 changes when UKI is rebuilt
-
-5. **Integrate PCR calculation into build** ⭐ Priority
-   - Calculate expected PCR 2 from dstack-uki.efi hash
-   - Generate PCR policy file during Yocto build
-   - Include policy in attestation verification
-
-6. **Pre-calculate PCR values for releases** ⭐ Important
-   - Hash each release's dstack-uki.efi
-   - Publish expected PCR values with release
-   - Enable verifiers to validate image authenticity
-
 ## References
 
 - [GCP Shielded VM Documentation](https://docs.cloud.google.com/compute/shielded-vm/docs/shielded-vm)
@@ -436,5 +402,5 @@ ls: cannot access '/boot/efi/EFI/BOOT/': No such file or directory
 
 ---
 
-*Analysis performed on GCP testgcp instance running dstack image*
+*Analysis performed on a GCP instance running dstack image*
 *Date: 2025-12-09*

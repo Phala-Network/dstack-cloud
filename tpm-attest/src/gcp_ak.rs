@@ -16,6 +16,8 @@ use tss_esapi::{
     Context as TssContext,
 };
 
+use crate::TpmEventLog;
+
 /// GCP vTPM NV indices for pre-provisioned AK
 pub mod gcp_nv_index {
     /// RSA AK certificate (DER format)
@@ -344,12 +346,17 @@ pub fn create_quote_with_gcp_ak_algo(
         ak_cert.len()
     );
 
+    let event_log = TpmEventLog::from_kernel_file()
+        .context("Failed to read TPM event log")?
+        .events;
+
     Ok(crate::TpmQuote {
         message,
         signature,
         pcr_values,
         ak_cert,
         platform,
+        event_log,
     })
 }
 

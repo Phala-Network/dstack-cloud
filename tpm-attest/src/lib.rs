@@ -16,7 +16,7 @@ use std::path::Path;
 use tracing::{debug, warn};
 
 // Re-export tpm-types
-pub use tpm_types::{PcrSelection, PcrValue, TpmQuote};
+pub use tpm_types::{PcrSelection, PcrValue, TpmEvent, TpmEventLog, TpmQuote};
 
 mod esapi_impl;
 use esapi_impl::EsapiContext;
@@ -292,6 +292,13 @@ impl TpmContext {
 
         warn!("AK certificate not found in TPM NV storage (expected on GCP vTPM)");
         Ok(None)
+    }
+
+    pub fn read_event_log(&self, pcr_index: u32) -> Result<Vec<TpmEvent>> {
+        let event_log = TpmEventLog::from_kernel_file()
+            .context("Failed to read TPM Event Log from kernel")?;
+
+        Ok(event_log.filter_by_pcr(pcr_index))
     }
 }
 

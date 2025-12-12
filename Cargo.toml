@@ -232,3 +232,4 @@ flate2 = "1.1"
 
 [profile.release]
 panic = "abort"
+

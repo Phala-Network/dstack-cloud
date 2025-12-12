@@ -16,7 +16,7 @@ use x509_parser::prelude::*;
 use rustls_pki_types::{CertificateDer, UnixTime};
 use webpki::{BorrowedCertRevocationList, CertRevocationList, EndEntityCert};
 
-use tpm_types::{PcrValue, TpmQuote};
+use tpm_types::{PcrValue, TpmEvent, TpmQuote};
 
 use crate::{get_root_ca, QuoteCollateral, VerificationError, VerificationStatus};
 
@@ -107,6 +107,13 @@ pub fn verify_quote_with_ca(
             error: anyhow!("PCR digest mismatch"),
         });
     }
+
+    verify_event_log(&quote.pcr_values, &quote.event_log).map_err(|e| VerificationError {
+        status: status.clone(),
+        error: e.context("event log verification failed"),
+    })?;
+    debug!("✓ Event Log replay verification successful");
+
     status.pcr_verified = true;
 
     let ak_public_key = match extract_ak_public_key_from_cert(&quote.ak_cert) {
@@ -286,6 +293,56 @@ fn compute_pcr_digest(pcr_values: &[PcrValue]) -> Result<Vec<u8>> {
         hasher.update(&pcr.value);
     }
     Ok(hasher.finalize().to_vec())
+}
+
+fn verify_event_log(pcr_values: &[PcrValue], event_log: &[TpmEvent]) -> Result<()> {
+    for pcr in pcr_values {
+        let pcr_events: Vec<&TpmEvent> = event_log
+            .iter()
+            .filter(|e| e.pcr_index == pcr.index)
+            .collect();
+
+        if pcr_events.is_empty() {
+            continue;
+        }
+
+        // Replay PCR extension to verify Event Log matches quote
+        let mut replayed_pcr = vec![0u8; 32];
+        for event in &pcr_events {
+            let mut hasher = Sha256::new();
+            hasher.update(&replayed_pcr);
+            hasher.update(&event.digest);
+            replayed_pcr = hasher.finalize().to_vec();
+        }
+
+        if replayed_pcr != pcr.value {
+            bail!(
+                "PCR {} replay mismatch: expected {}, got {}",
+                pcr.index,
+                hex::encode(&pcr.value),
+                hex::encode(&replayed_pcr)
+            );
+        }
+
+        debug!(
+            "✓ PCR {} replay verification successful ({} events)",
+            pcr.index,
+            pcr_events.len()
+        );
+
+        // For PCR 2: Extract Event 28 (UKI measurement) for image verification
+        // NOTE: Extracting the 3rd event (index 2) is GCP OVMF-specific behavior.
+        // On GCP, PCR 2 events are: [0]=EV_SEPARATOR, [1]=EV_EFI_GPT_EVENT,
+        // [2]=UKI (Event 28), [3]=Linux kernel (Event 41)
+        // Other platforms may have different event ordering.
+        if pcr.index == 2 && pcr_events.len() >= 3 {
+            let uki_digest = hex::encode(&pcr_events[2].digest);
+            debug!("Event 28 (UKI hash): {}", uki_digest);
+            debug!("To verify image: compare this against expected UKI Authenticode hash");
+        }
+    }
+
+    Ok(())
 }
 
 fn extract_ak_public_key_from_cert(ak_cert_der: &[u8]) -> Result<PublicKey> {

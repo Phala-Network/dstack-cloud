@@ -315,7 +315,6 @@ impl DstackGuestRpc for InternalRpcHandler {
                     .create_quote(&report_data, &pcr_selection)
                     .context("Failed to create TPM quote")?;
 
-                // Serialize TPM quote to JSON for structured verification
                 let quote =
                     serde_json::to_vec(&tpm_quote).context("Failed to serialize TPM quote")?;
 

@@ -408,15 +408,11 @@ impl CvmVerifier {
     ) -> Result<()> {
         match attestation.mode {
             AttestationMode::GcpTdx => {
-                // use PCR 2 as os_image_hash
-                let Some(tpm_report) = &attestation.report.tpm_report else {
-                    bail!("No TPM report");
+                let Some(tpm_quote) = &attestation.tpm_quote else {
+                    bail!("No TPM quote");
                 };
-                let os_image_hash = tpm_report.get_pcr(2).context("pcr2 is missing")?;
-                if vm_config.os_image_hash != os_image_hash {
-                    bail!("OS image hash mismatch");
-                }
-                Ok(())
+                self.verify_os_image_hash_for_gcp_tdx(vm_config, tpm_quote)
+                    .await
             }
             AttestationMode::DstackTdx => {
                 self.verify_os_image_hash_for_dstack_tdx(vm_config, attestation, debug, details)
@@ -550,63 +546,62 @@ impl CvmVerifier {
         }
     }
 
-    /// Verify PCR 2 matches UKI hash
-    async fn verify_pcr2_uki_hash(&self, tpm_quote: &TpmQuote, vm_config: &VmConfig) -> Result<()> {
-        // Find PCR 2 in the quote
-        let pcr2 = tpm_quote
+    /// Verify GCP TDX image hash using PCR 2 Event Log
+    ///
+    /// For GCP TDX, we verify:
+    /// 1. PCR 0 matches expected GCP OVMF v2 firmware
+    /// 2. UKI hash by extracting Event 28 (3rd event in PCR 2) from TPM Event Log
+    ///
+    /// IMPORTANT: Extracting the 3rd event is GCP OVMF-specific behavior.
+    /// On GCP, PCR 2 events are ordered as:
+    /// [0]=EV_SEPARATOR, [1]=EV_EFI_GPT_EVENT, [2]=UKI (Event 28), [3]=Linux kernel
+    async fn verify_os_image_hash_for_gcp_tdx(
+        &self,
+        vm_config: &VmConfig,
+        tpm_quote: &TpmQuote,
+    ) -> Result<()> {
+        // Verify PCR 0 (GCP OVMF firmware)
+        const EXPECTED_PCR0: &str =
+            "0cca9ec161b09288802e5a112255d21340ed5b797f5fe29cecccfd8f67b9f802";
+
+        let pcr0 = tpm_quote
             .pcr_values
             .iter()
-            .find(|p| p.index == 2)
-            .context("PCR 2 not found in TPM quote")?;
+            .find(|p| p.index == 0)
+            .context("PCR 0 not found in TPM quote")?;
 
-        debug!("PCR 2 from quote: {}", hex::encode(&pcr2.value));
+        let pcr0_hex = hex::encode(&pcr0.value);
 
-        // Download UKI image
-        let image_paths = self.ensure_image_downloaded(vm_config).await?;
+        // Get expected UKI hash from os_image_hash (which should be set to UKI Authenticode hash)
+        let expected_uki_hash = &vm_config.os_image_hash;
 
-        // Read UKI file
-        let uki_path = image_paths.kernel_path; // In dstack, UKI is the kernel file
-        let uki_data = fs_err::read(&uki_path)
-            .with_context(|| format!("Failed to read UKI file: {}", uki_path.display()))?;
+        let pcr2_events: Vec<_> = tpm_quote
+            .event_log
+            .iter()
+            .filter(|e| e.pcr_index == 2)
+            .collect();
+        debug!("PCR 2 Event Log contains {} events", pcr2_events.len());
+        // Extract Event 28 (3rd event, 0-indexed as 2)
+        // NOTE: This is GCP OVMF-specific behavior
+        let event_28_digest = {
+            if pcr0_hex != EXPECTED_PCR0 {
+                bail!("PCR 0 mismatch: expected GCP OVMF v2 ({EXPECTED_PCR0}), got {pcr0_hex}");
+            }
+            &pcr2_events.get(2).context("Event 28 not found")?.digest
+        };
 
-        // Calculate expected PCR 2
-        let expected_pcr2 = Self::calculate_pcr2_from_uki(&uki_data)?;
-
-        debug!("Expected PCR 2: {}", hex::encode(&expected_pcr2));
-
-        if pcr2.value != expected_pcr2 {
+        if event_28_digest != expected_uki_hash {
             bail!(
-                "PCR 2 mismatch: expected={}, actual={}",
-                hex::encode(&expected_pcr2),
-                hex::encode(&pcr2.value)
+                "UKI hash mismatch: expected={}, actual={}",
+                hex::encode(expected_uki_hash),
+                hex::encode(event_28_digest)
             );
         }
-
-        info!("✓ PCR 2 verified against UKI hash");
+        debug!(
+            "✓ UKI hash verified from PCR 2 Event Log (Event 28), digest: {}",
+            hex::encode(event_28_digest)
+        );
         Ok(())
-    }
-
-    /// Calculate PCR 2 value from UKI binary
-    ///
-    /// PCR 2 is extended with the complete UKI hash during boot.
-    /// Formula: PCR2 = SHA256(0x00...00 || SHA256(UKI))
-    fn calculate_pcr2_from_uki(uki_data: &[u8]) -> Result<Vec<u8>> {
-        // PCR starts at zeros (32 bytes for SHA-256)
-        let mut pcr = vec![0u8; 32];
-
-        // Hash the UKI binary
-        let uki_hash = Sha256::digest(uki_data);
-
-        debug!("UKI hash: {}", hex::encode(uki_hash));
-
-        // Extend PCR with UKI hash
-        // PCR extend formula: PCR_new = SHA256(PCR_old || event_data)
-        let mut hasher = Sha256::new();
-        hasher.update(&pcr);
-        hasher.update(uki_hash);
-        pcr = hasher.finalize().to_vec();
-
-        Ok(pcr)
     }
 
     pub async fn download_image(&self, hex_os_image_hash: &str, dst_dir: &Path) -> Result<()> {

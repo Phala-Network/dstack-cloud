@@ -11,6 +11,7 @@ use tcg::{TcgDigest, TcgEfiSpecIdEvent};
 
 mod codecs;
 mod tcg;
+pub mod tpm;
 
 /// The path to the userspace TDX event log file.
 pub const RUNTIME_EVENT_LOG_FILE: &str = "/run/log/tdx_mr3/tdx_events.log";

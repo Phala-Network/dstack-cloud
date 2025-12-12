@@ -7826,6 +7826,7 @@ dependencies = [
 name = "tpm-types"
 version = "0.5.5"
 dependencies = [
+ "cc-eventlog",
  "dstack-types",
  "parity-scale-codec",
  "serde",
