@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use scale::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use serde_human_bytes as hex_bytes;
 use size_parser::human_size;
@@ -262,10 +263,10 @@ pub fn dstack_agent_address() -> String {
 }
 
 /// Hardware/Cloud Platform
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
-    /// dstack native platform
+    /// dstack bare platform
     Dstack,
     /// Google Cloud Platform
     Gcp,
@@ -273,16 +274,20 @@ pub enum Platform {
 
 impl Platform {
     /// Detect platform from system DMI information
-    pub fn detect() -> Self {
+    pub fn detect() -> Option<Self> {
         if let Ok(board_name) = std::fs::read_to_string("/sys/class/dmi/id/board_name") {
             match board_name.trim() {
-                "dstack" => return Self::Dstack,
-                "Google Compute Engine" => return Self::Gcp,
+                "dstack" | "qemu" => return Some(Self::Dstack),
+                "Google Compute Engine" => return Some(Self::Gcp),
                 _ => {}
             }
         }
-        // Default to dstack if cannot detect
-        Self::Dstack
+        None
+    }
+
+    /// Detect platform from system DMI information, default to Dstack if cannot detect
+    pub fn detect_or_dstack() -> Self {
+        Self::detect().unwrap_or(Self::Dstack)
     }
 
     /// Get platform name as string

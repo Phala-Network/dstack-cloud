@@ -37,8 +37,10 @@ flate2.workspace = true
 or-panic.workspace = true
 rand.workspace = true
 tpm-attest = { workspace = true, optional = true }
+tpm-types.workspace = true
 dstack-types.workspace = true
+tpm-qvl.workspace = true
 
 [features]
-default = []
-tpm-quote = ["dep:tpm-attest"]
+default = ["quote"]
+quote = ["dep:tpm-attest"]

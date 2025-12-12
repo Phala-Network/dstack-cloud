@@ -7,8 +7,8 @@ use dstack_kms_rpc::{kms_client::KmsClient, SignCertRequest};
 use dstack_types::{AppKeys, KeyProvider};
 use ra_rpc::client::{RaClient, RaClientConfig};
 use ra_tls::{
-    attestation::QuoteContentType,
-    cert::{compress_event_log, generate_ra_cert, CaCert, CertConfig, CertSigningRequest},
+    attestation::{AttestationMode, QuoteContentType},
+    cert::{compress_event_log, generate_ra_cert, CaCert, CertConfig, CertSigningRequestV2, Csr},
     rcgen::KeyPair,
 };
 use tdx_attest::{eventlog::read_runtime_event_logs, get_quote};
@@ -26,7 +26,7 @@ pub enum CertRequestClient {
 impl CertRequestClient {
     pub async fn sign_csr(
         &self,
-        csr: &CertSigningRequest,
+        csr: &CertSigningRequestV2,
         signature: &[u8],
     ) -> Result<Vec<String>> {
         match self {
@@ -102,7 +102,7 @@ impl CertRequestClient {
     ) -> Result<Vec<String>> {
         let pubkey = key.public_key_der();
         let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
-        let (quote, event_log) = if !no_ra {
+        let (tdx_quote, tdx_event_log) = if !no_ra {
             let quote = get_quote(&report_data).context("Failed to get quote")?;
             let event_logs = read_runtime_event_logs().context("Failed to decode event log")?;
             let event_log =
@@ -115,12 +115,28 @@ impl CertRequestClient {
             (vec![], vec![])
         };
 
-        let csr = CertSigningRequest {
+        let attestation_mode =
+            AttestationMode::detect().context("Failed to detect attestation mode")?;
+
+        let tpm_quote = if attestation_mode.has_tpm() {
+            let tpm = tpm_attest::TpmContext::detect().context("Failed to detect TPM")?;
+            let pcr_selection = tpm_attest::dstack_pcr_policy();
+            let quote = tpm
+                .create_quote(&report_data, &pcr_selection)
+                .context("Failed to create TPM quote")?;
+            Some(quote)
+        } else {
+            None
+        };
+
+        let csr = CertSigningRequestV2 {
             confirm: "please sign cert:".to_string(),
             pubkey,
             config,
-            quote,
-            event_log,
+            tdx_quote,
+            tdx_event_log,
+            attestation_mode,
+            tpm_quote,
         };
         let signature = csr.signed_by(key).context("Failed to sign the CSR")?;
         self.sign_csr(&csr, &signature)

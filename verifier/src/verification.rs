@@ -10,9 +10,10 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use cc_eventlog::TdxEventLogEntry as EventLog;
+use dcap_qvl::verify::VerifiedReport as TdxVerifiedReport;
 use dstack_mr::{RtmrLog, TdxMeasurementDetails, TdxMeasurements};
 use dstack_types::VmConfig;
-use ra_tls::attestation::{Attestation, AttestationMode, TpmQuoteData, VerifiedAttestation};
+use ra_tls::attestation::{Attestation, AttestationMode, TpmQuote, VerifiedAttestation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::{io::AsyncWriteExt, process::Command};
@@ -384,105 +385,7 @@ impl CvmVerifier {
         // Event log is always JSON string
         let event_log = request.event_log.as_bytes().to_vec();
 
-        let attestation = Attestation::new(quote, event_log)
-            .context("Failed to create attestation from quote and event log")?;
-
-        let mode = attestation.mode;
-        debug!("Detected attestation mode: {:?}", mode);
-
-        let debug = request.debug.unwrap_or(false);
-
-        let details = VerificationDetails {
-            quote_verified: false,
-            event_log_verified: false,
-            os_image_hash_verified: false,
-            report_data: None,
-            tcb_status: None,
-            advisory_ids: vec![],
-            app_info: None,
-            acpi_tables: None,
-            rtmr_debug: None,
-        };
-
-        let vm_config: VmConfig =
-            serde_json::from_str(&request.vm_config).context("Failed to decode VM config JSON")?;
-
-        // Dispatch to different verification flows based on mode
-        match mode {
-            AttestationMode::Tdx => {
-                self.verify_tdx(request, attestation, &vm_config, debug, details).await
-            }
-            AttestationMode::Tpm => {
-                self.verify_tpm(request, attestation, &vm_config, debug, details).await
-            }
-            AttestationMode::TdxTpm => {
-                self.verify_tdx_tpm(request, attestation, &vm_config, debug, details).await
-            }
-        }
-    }
-
-    /// Verify TDX-only attestation
-    async fn verify_tdx(
-        &self,
-        request: &VerificationRequest,
-        attestation: Attestation,
-        vm_config: &VmConfig,
-        debug: bool,
-        mut details: VerificationDetails,
-    ) -> Result<VerificationResponse> {
-        // Step 1: Verify the TDX quote using dcap-qvl
-        let verified_attestation = match self.verify_quote(attestation, &request.pccs_url).await {
-            Ok(att) => {
-                details.quote_verified = true;
-                details.tcb_status = Some(att.report.status.clone());
-                details.advisory_ids = att.report.advisory_ids.clone();
-                // Extract and store report_data
-                if let Ok(report_data) = att.decode_report_data() {
-                    details.report_data = Some(hex::encode(report_data));
-                }
-                att
-            }
-            Err(e) => {
-                return Ok(VerificationResponse {
-                    is_valid: false,
-                    details,
-                    reason: Some(format!("Quote verification failed: {}", e)),
-                });
-            }
-        };
-
-        // Step 3: Verify os-image-hash matches using dstack-mr
-        if let Err(e) = self
-            .verify_os_image_hash(&vm_config, &verified_attestation, debug, &mut details)
-            .await
-        {
-            return Ok(VerificationResponse {
-                is_valid: false,
-                details,
-                reason: Some(format!("OS image hash verification failed: {e:#}")),
-            });
-        }
-        details.os_image_hash_verified = true;
-        match verified_attestation.decode_app_info(false) {
-            Ok(mut info) => {
-                info.os_image_hash = vm_config.os_image_hash.clone();
-                details.event_log_verified = true;
-                details.app_info = Some(info);
-            }
-            Err(e) => {
-                return Ok(VerificationResponse {
-                    is_valid: false,
-                    details,
-                    reason: Some(format!("Event log verification failed: {}", e)),
-                });
-            }
-        };
-
-        Ok(VerificationResponse {
-            is_valid: true,
-            details,
-            reason: None,
-        })
+        todo!("Not implemented")
     }
 
     async fn verify_quote(
@@ -490,11 +393,8 @@ impl CvmVerifier {
         attestation: Attestation,
         pccs_url: &Option<String>,
     ) -> Result<VerifiedAttestation> {
-        // Extract report data from quote
-        let report_data = attestation.decode_report_data()?;
-
         attestation
-            .verify(&report_data, pccs_url.as_deref())
+            .verify(None, pccs_url.as_deref())
             .await
             .context("Quote verification failed")
     }
@@ -506,9 +406,41 @@ impl CvmVerifier {
         debug: bool,
         details: &mut VerificationDetails,
     ) -> Result<()> {
+        match attestation.mode {
+            AttestationMode::GcpTdx => {
+                // use PCR 2 as os_image_hash
+                let Some(tpm_report) = &attestation.report.tpm_report else {
+                    bail!("No TPM report");
+                };
+                let os_image_hash = tpm_report.get_pcr(2).context("pcr2 is missing")?;
+                if vm_config.os_image_hash != os_image_hash {
+                    bail!("OS image hash mismatch");
+                }
+                Ok(())
+            }
+            AttestationMode::DstackTdx => {
+                self.verify_os_image_hash_for_dstack_tdx(vm_config, attestation, debug, details)
+                    .await
+            }
+            AttestationMode::DstackNitro => bail!("Nitro not supported"),
+        }
+    }
+    async fn verify_os_image_hash_for_dstack_tdx(
+        &self,
+        vm_config: &VmConfig,
+        attestation: &VerifiedAttestation,
+        debug: bool,
+        details: &mut VerificationDetails,
+    ) -> Result<()> {
+        let Some(report) = &attestation.report.tdx_report else {
+            bail!("No TDX report");
+        };
+        let Some(tdx_quote) = &attestation.tdx_quote else {
+            bail!("No TDX quote");
+        };
+        let event_log = &tdx_quote.event_log;
         // Get boot info from attestation
-        let report = attestation
-            .report
+        let report = report
             .report
             .as_td10()
             .context("Failed to decode TD report")?;
@@ -564,16 +496,6 @@ impl CvmVerifier {
             rtmr2: mrs.rtmr2.clone(),
         };
 
-        let event_log: Vec<EventLog> = serde_json::from_slice(&attestation.raw_event_log)
-            .context("Failed to parse event log for mismatch analysis")?;
-
-        let rtmr3 = cc_eventlog::replay_event_logs(&event_log, None, 3)
-            .context("Failed to replay event logs for mismatch analysis")?;
-
-        if rtmr3 != report.rt_mr3 {
-            bail!("RTMR3 mismatch");
-        }
-
         match expected_mrs.assert_eq(&verified_mrs) {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -593,7 +515,7 @@ impl CvmVerifier {
                         &verified_mrs.rtmr0,
                         &expected_logs[0],
                         &[],
-                        &event_log,
+                        event_log,
                     ));
                 }
 
@@ -604,7 +526,7 @@ impl CvmVerifier {
                         &verified_mrs.rtmr1,
                         &expected_logs[1],
                         &[],
-                        &event_log,
+                        event_log,
                     ));
                 }
 
@@ -615,7 +537,7 @@ impl CvmVerifier {
                         &verified_mrs.rtmr2,
                         &expected_logs[2],
                         &[],
-                        &event_log,
+                        event_log,
                     ));
                 }
 
@@ -628,181 +550,10 @@ impl CvmVerifier {
         }
     }
 
-    /// Verify TPM-only attestation
-    async fn verify_tpm(
-        &self,
-        _request: &VerificationRequest,
-        attestation: Attestation,
-        vm_config: &VmConfig,
-        _debug: bool,
-        mut details: VerificationDetails,
-    ) -> Result<VerificationResponse> {
-        let tpm_data = attestation
-            .tpm_data
-            .as_ref()
-            .context("TPM quote data not found in vTPM attestation")?;
-
-        // Step 1: Verify TPM quote signature and AK certificate
-        if let Err(e) = self.verify_tpm_quote(tpm_data).await {
-            return Ok(VerificationResponse {
-                is_valid: false,
-                details,
-                reason: Some(format!("TPM quote verification failed: {e:#}")),
-            });
-        }
-        details.quote_verified = true;
-
-        // Step 2: Verify PCR 2 matches UKI hash
-        if let Err(e) = self.verify_pcr2_uki_hash(tpm_data, vm_config).await {
-            return Ok(VerificationResponse {
-                is_valid: false,
-                details,
-                reason: Some(format!("PCR 2 verification failed: {e:#}")),
-            });
-        }
-        details.os_image_hash_verified = true;
-
-        Ok(VerificationResponse {
-            is_valid: true,
-            details,
-            reason: None,
-        })
-    }
-
-    /// Verify dual-mode attestation (TDX + TPM)
-    async fn verify_tdx_tpm(
-        &self,
-        request: &VerificationRequest,
-        attestation: Attestation,
-        vm_config: &VmConfig,
-        debug: bool,
-        mut details: VerificationDetails,
-    ) -> Result<VerificationResponse> {
-        // Step 1: Verify TDX quote
-        let verified_attestation = match self.verify_quote(attestation.clone(), &request.pccs_url).await {
-            Ok(att) => {
-                details.quote_verified = true;
-                details.tcb_status = Some(att.report.status.clone());
-                details.advisory_ids = att.report.advisory_ids.clone();
-                if let Ok(report_data) = att.decode_report_data() {
-                    details.report_data = Some(hex::encode(report_data));
-                }
-                att
-            }
-            Err(e) => {
-                return Ok(VerificationResponse {
-                    is_valid: false,
-                    details,
-                    reason: Some(format!("TDX quote verification failed: {e}")),
-                });
-            }
-        };
-
-        // Step 2: Verify TDX RTMR0-3 (including RTMR3 from event log)
-        if let Err(e) = self
-            .verify_os_image_hash(vm_config, &verified_attestation, debug, &mut details)
-            .await
-        {
-            return Ok(VerificationResponse {
-                is_valid: false,
-                details,
-                reason: Some(format!("TDX RTMR verification failed: {e:#}")),
-            });
-        }
-
-        // Step 3: Verify vTPM quote
-        let tpm_data = attestation
-            .tpm_data
-            .as_ref()
-            .context("TPM quote data not found in TdxTpm attestation")?;
-
-        if let Err(e) = self.verify_tpm_quote(tpm_data).await {
-            return Ok(VerificationResponse {
-                is_valid: false,
-                details,
-                reason: Some(format!("vTPM quote verification failed: {e:#}")),
-            });
-        }
-
-        // Step 4: Verify PCR 2 matches UKI hash
-        if let Err(e) = self.verify_pcr2_uki_hash(tpm_data, vm_config).await {
-            return Ok(VerificationResponse {
-                is_valid: false,
-                details,
-                reason: Some(format!("PCR 2 verification failed: {e:#}")),
-            });
-        }
-        details.os_image_hash_verified = true;
-
-        // Step 5: Extract app info from TDX event log
-        match verified_attestation.decode_app_info(false) {
-            Ok(mut info) => {
-                info.os_image_hash = vm_config.os_image_hash.clone();
-                details.event_log_verified = true;
-                details.app_info = Some(info);
-            }
-            Err(e) => {
-                return Ok(VerificationResponse {
-                    is_valid: false,
-                    details,
-                    reason: Some(format!("Event log verification failed: {e}")),
-                });
-            }
-        }
-
-        info!("✓ Dual-mode (TDX + vTPM) verification successful");
-        Ok(VerificationResponse {
-            is_valid: true,
-            details,
-            reason: None,
-        })
-    }
-
-    /// Verify TPM quote signature and AK certificate chain
-    async fn verify_tpm_quote(&self, tpm_data: &TpmQuoteData) -> Result<()> {
-        use tpm_qvl::{verify_quote, get_root_ca, get_collateral};
-        use tpm_attest::{PcrValue, TpmQuote};
-
-        // Prepare TpmQuote structure
-        let quote = TpmQuote {
-            message: tpm_data.message.clone(),
-            signature: tpm_data.signature.clone(),
-            pcr_values: tpm_data
-                .pcr_values
-                .iter()
-                .map(|p| PcrValue {
-                    index: p.index,
-                    algorithm: "sha256".to_string(), // ra-tls PcrValue doesn't have algorithm, assume SHA-256
-                    value: p.value.clone(),
-                })
-                .collect(),
-            ak_cert: tpm_data.ak_cert.clone(),
-            qualifying_data: tpm_data.qualifying_data.clone(),
-        };
-
-        // Get root CA based on platform
-        let root_ca = get_root_ca(tpm_data.platform)
-            .with_context(|| format!("Failed to get root CA for platform: {:?}", tpm_data.platform))?;
-
-        // Extract collateral from AK cert chain (downloads intermediate certs and CRLs)
-        let collateral = get_collateral(&quote, root_ca)
-            .context("Failed to get collateral from AK certificate chain")?;
-
-        verify_quote(&quote, &collateral, root_ca)
-            .map_err(|e| anyhow!("TPM quote verification failed: {e}"))?;
-
-        info!("✓ TPM quote signature and AK certificate verified (platform: {})", tpm_data.platform.as_str());
-        Ok(())
-    }
-
     /// Verify PCR 2 matches UKI hash
-    async fn verify_pcr2_uki_hash(
-        &self,
-        tpm_data: &TpmQuoteData,
-        vm_config: &VmConfig,
-    ) -> Result<()> {
+    async fn verify_pcr2_uki_hash(&self, tpm_quote: &TpmQuote, vm_config: &VmConfig) -> Result<()> {
         // Find PCR 2 in the quote
-        let pcr2 = tpm_data
+        let pcr2 = tpm_quote
             .pcr_values
             .iter()
             .find(|p| p.index == 2)
@@ -846,7 +597,7 @@ impl CvmVerifier {
         // Hash the UKI binary
         let uki_hash = Sha256::digest(uki_data);
 
-        debug!("UKI hash: {}", hex::encode(&uki_hash));
+        debug!("UKI hash: {}", hex::encode(uki_hash));
 
         // Extend PCR with UKI hash
         // PCR extend formula: PCR_new = SHA256(PCR_old || event_data)

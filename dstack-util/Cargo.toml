@@ -32,7 +32,7 @@ x25519-dalek.workspace = true
 
 dstack-kms-rpc.workspace = true
 ra-rpc = { workspace = true, features = ["client"] }
-ra-tls.workspace = true
+ra-tls = { workspace = true, features = ["quote"] }
 dstack-gateway-rpc.workspace = true
 tdx-attest.workspace = true
 tpm-attest.workspace = true

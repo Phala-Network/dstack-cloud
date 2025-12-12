@@ -21,10 +21,12 @@ use x509_parser::prelude::{FromDer as _, X509Certificate};
 use x509_parser::public_key::PublicKey;
 use x509_parser::x509::SubjectPublicKeyInfo;
 
-use crate::attestation::QuoteContentType;
-use crate::oids::{PHALA_RATLS_APP_ID, PHALA_RATLS_CERT_USAGE};
+use crate::attestation::{Attestation, AttestationMode, QuoteContentType, TdxQuote, TpmQuote};
+use crate::oids::{
+    PHALA_RATLS_APP_ID, PHALA_RATLS_ATTESTATION_MODE, PHALA_RATLS_CERT_USAGE, PHALA_RATLS_TPM_QUOTE,
+};
 use crate::{
-    oids::{PHALA_RATLS_EVENT_LOG, PHALA_RATLS_QUOTE},
+    oids::{PHALA_RATLS_EVENT_LOG, PHALA_RATLS_TDX_QUOTE},
     traits::CertExt,
 };
 use ring::signature::{
@@ -81,7 +83,7 @@ impl CaCert {
     /// Sign a remote certificate signing request.
     pub fn sign_csr(
         &self,
-        csr: &CertSigningRequest,
+        csr: &CertSigningRequestV2,
         app_id: Option<&[u8]>,
         usage: &str,
     ) -> Result<Certificate> {
@@ -95,8 +97,14 @@ impl CaCert {
             .alt_names(&cfg.subject_alt_names)
             .usage_server_auth(cfg.usage_server_auth)
             .usage_client_auth(cfg.usage_client_auth)
-            .maybe_quote(cfg.ext_quote.then_some(&csr.quote))
-            .maybe_event_log(cfg.ext_quote.then_some(&csr.event_log))
+            .maybe_attestation_mode(cfg.ext_quote.then_some(csr.attestation_mode))
+            .maybe_tdx_quote(cfg.ext_quote.then_some(&csr.tdx_quote))
+            .maybe_tdx_event_log(cfg.ext_quote.then_some(&csr.tdx_event_log))
+            .maybe_tpm_quote(if cfg.ext_quote {
+                csr.tpm_quote.as_ref()
+            } else {
+                None
+            })
             .maybe_app_id(app_id)
             .special_usage(usage)
             .build();
@@ -122,8 +130,8 @@ pub struct CertConfig {
 }
 
 /// A certificate signing request.
-#[derive(Encode, Decode, Clone, PartialEq)]
-pub struct CertSigningRequest {
+#[derive(Encode, Decode, Clone)]
+pub struct CertSigningRequestV1 {
     /// The confirm word, need to be "please sign cert:"
     pub confirm: String,
     /// The public key of the certificate.
@@ -136,10 +144,23 @@ pub struct CertSigningRequest {
     pub event_log: Vec<u8>,
 }
 
-impl CertSigningRequest {
-    /// Sign the certificate signing request.
-    pub fn signed_by(&self, key: &KeyPair) -> Result<Vec<u8>> {
-        let encoded = self.encode();
+/// A trait for Certificate Signing Request (CSR) operations.
+///
+/// This trait provides methods for signing and verifying CSRs using ECDSA P-256 keys.
+/// Implementors must provide the data to sign, the public key, and a magic string for validation.
+pub trait Csr {
+    /// Signs the CSR data using the provided key pair.
+    ///
+    /// # Arguments
+    /// * `key` - The ECDSA key pair used to sign the CSR.
+    ///
+    /// # Returns
+    /// The DER-encoded ECDSA signature as a byte vector.
+    ///
+    /// # Errors
+    /// Returns an error if key pair creation or signing fails.
+    fn signed_by(&self, key: &KeyPair) -> Result<Vec<u8>> {
+        let encoded = self.data_to_sign();
         let rng = SystemRandom::new();
         // Extract the DER-encoded private key and create an ECDSA key pair
         let key_pair =
@@ -155,11 +176,24 @@ impl CertSigningRequest {
         Ok(signature)
     }
 
-    /// Verify the signature of the certificate signing request.
-    pub fn verify(&self, signature: &[u8]) -> Result<()> {
-        let encoded = self.encode();
+    /// Verifies the signature of the CSR.
+    ///
+    /// # Arguments
+    /// * `signature` - The signature bytes to verify against the CSR data.
+    ///
+    /// # Returns
+    /// `Ok(())` if the signature is valid and the magic string matches.
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The public key cannot be parsed
+    /// - The algorithm is not ECDSA P-256
+    /// - The signature is invalid
+    /// - The magic string does not match "please sign cert:"
+    fn verify(&self, signature: &[u8]) -> Result<()> {
+        let encoded = self.data_to_sign();
         let (_rem, pki) =
-            SubjectPublicKeyInfo::from_der(&self.pubkey).context("Failed to parse pubkey")?;
+            SubjectPublicKeyInfo::from_der(self.pubkey()).context("Failed to parse pubkey")?;
         let parsed_pki = pki.parsed().context("Failed to parse pki")?;
         if !matches!(parsed_pki, PublicKey::EC(_)) {
             bail!("Unsupported algorithm");
@@ -169,15 +203,108 @@ impl CertSigningRequest {
         key.verify(&encoded, signature)
             .ok()
             .context("Invalid signature")?;
-        if self.confirm != "please sign cert:" {
+        if self.magic() != "please sign cert:" {
             bail!("Invalid confirm word");
         }
         Ok(())
     }
 
-    /// Encode the certificate signing request to a vector.
+    /// Returns the data that should be signed or verified.
+    ///
+    /// Implementors should return the encoded CSR data as a byte vector.
+    fn data_to_sign(&self) -> Vec<u8>;
+
+    /// Returns the public key associated with this CSR.
+    ///
+    /// The public key should be in DER-encoded SubjectPublicKeyInfo format.
+    fn pubkey(&self) -> &[u8];
+
+    /// Returns the magic string used for validation.
+    ///
+    /// This string is checked during verification to ensure the CSR is valid.
+    /// Expected value: "please sign cert:"
+    fn magic(&self) -> &str;
+}
+
+impl Csr for CertSigningRequestV1 {
+    fn data_to_sign(&self) -> Vec<u8> {
+        self.encode()
+    }
+
+    fn pubkey(&self) -> &[u8] {
+        &self.pubkey
+    }
+
+    fn magic(&self) -> &str {
+        &self.confirm
+    }
+}
+
+/// A certificate signing request.
+#[derive(Encode, Decode, Clone)]
+pub struct CertSigningRequestV2 {
+    /// The confirm word, need to be "please sign cert:"
+    pub confirm: String,
+    /// The public key of the certificate.
+    pub pubkey: Vec<u8>,
+    /// The certificate configuration.
+    pub config: CertConfig,
+    /// The attestation mode.
+    pub attestation_mode: AttestationMode,
+    /// The quote of the certificate.
+    pub tdx_quote: Vec<u8>,
+    /// The event log of the certificate.
+    pub tdx_event_log: Vec<u8>,
+    /// The TPM quote of the certificate.
+    pub tpm_quote: Option<TpmQuote>,
+}
+
+impl From<CertSigningRequestV1> for CertSigningRequestV2 {
+    fn from(v0: CertSigningRequestV1) -> Self {
+        Self {
+            confirm: v0.confirm,
+            pubkey: v0.pubkey,
+            config: v0.config,
+            attestation_mode: AttestationMode::DstackTdx,
+            tdx_quote: v0.quote,
+            tdx_event_log: v0.event_log,
+            tpm_quote: None,
+        }
+    }
+}
+
+impl Csr for CertSigningRequestV2 {
+    fn data_to_sign(&self) -> Vec<u8> {
+        self.encode()
+    }
+
+    fn pubkey(&self) -> &[u8] {
+        &self.pubkey
+    }
+
+    fn magic(&self) -> &str {
+        &self.confirm
+    }
+}
+
+impl CertSigningRequestV2 {
+    /// Encodes the certificate signing request into a byte vector.
     pub fn to_vec(&self) -> Vec<u8> {
         self.encode()
+    }
+
+    /// To attestation
+    pub fn to_attestation(&self) -> Result<Attestation> {
+        Ok(Attestation {
+            mode: self.attestation_mode,
+            tdx_quote: Some(TdxQuote {
+                quote: self.tdx_quote.clone(),
+                event_log: serde_json::from_slice(&self.tdx_event_log)
+                    .context("Failed to parse tdx_event_log")?,
+            }),
+            tpm_quote: self.tpm_quote.clone(),
+            report: (),
+        })
     }
 }
 
@@ -191,8 +318,10 @@ pub struct CertRequest<'a, Key> {
     ca_level: Option<u8>,
     app_id: Option<&'a [u8]>,
     special_usage: Option<&'a str>,
-    quote: Option<&'a [u8]>,
-    event_log: Option<&'a [u8]>,
+    tdx_quote: Option<&'a [u8]>,
+    tdx_event_log: Option<&'a [u8]>,
+    attestation_mode: Option<AttestationMode>,
+    tpm_quote: Option<&'a TpmQuote>,
     not_before: Option<SystemTime>,
     not_after: Option<SystemTime>,
     #[builder(default = false)]
@@ -228,14 +357,14 @@ impl<Key> CertRequest<'_, Key> {
                     .push(SanType::DnsName(alt_name.clone().try_into()?));
             }
         }
-        if let Some(quote) = self.quote {
+        if let Some(quote) = self.tdx_quote {
             let content = yasna::construct_der(|writer| {
                 writer.write_bytes(quote);
             });
-            let ext = CustomExtension::from_oid_content(PHALA_RATLS_QUOTE, content);
+            let ext = CustomExtension::from_oid_content(PHALA_RATLS_TDX_QUOTE, content);
             params.custom_extensions.push(ext);
         }
-        if let Some(event_log) = self.event_log {
+        if let Some(event_log) = self.tdx_event_log {
             let content = yasna::construct_der(|writer| {
                 writer.write_bytes(event_log);
             });
@@ -254,6 +383,22 @@ impl<Key> CertRequest<'_, Key> {
                 writer.write_bytes(special_usage.as_bytes());
             });
             let ext = CustomExtension::from_oid_content(PHALA_RATLS_CERT_USAGE, content);
+            params.custom_extensions.push(ext);
+        }
+        if let Some(mode) = self.attestation_mode {
+            let content = yasna::construct_der(|writer| {
+                writer.write_bytes(mode.as_str().as_bytes());
+            });
+            let ext = CustomExtension::from_oid_content(PHALA_RATLS_ATTESTATION_MODE, content);
+            params.custom_extensions.push(ext);
+        }
+        if let Some(tpm_quote) = self.tpm_quote {
+            let tpm_json =
+                serde_json::to_vec(tpm_quote).context("Failed to serialize TPM quote data")?;
+            let content = yasna::construct_der(|writer| {
+                writer.write_bytes(&tpm_json);
+            });
+            let ext = CustomExtension::from_oid_content(PHALA_RATLS_TPM_QUOTE, content);
             params.custom_extensions.push(ext);
         }
         if let Some(ca_level) = self.ca_level {
@@ -373,26 +518,40 @@ pub fn decompress_event_log(data: &[u8]) -> Result<Vec<u8>> {
 
 /// Generate a certificate with RA-TLS quote and event log.
 pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertPair> {
+    use crate::attestation::Attestation;
     use rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256};
 
     let ca = CaCert::new(ca_cert_pem, ca_key_pem)?;
 
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
     let pubkey = key.public_key_der();
-    let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
-    let quote = get_quote(&report_data).context("Failed to get quote")?;
-    let event_logs = read_runtime_event_logs().context("Failed to read event logs")?;
 
-    let event_log = serde_json::to_vec(&event_logs).context("Failed to serialize RTMR3 events")?;
+    // Get attestation data (auto-detects mode: TDX, vTPM, or both)
+    let attestation = Attestation::local().context("Failed to collect attestation")?;
+    let mode = attestation.mode;
 
-    // Compress RTMR3 events to reduce certificate size
-    let event_log = compress_event_log(&event_log).context("Failed to compress RTMR3 events")?;
+    // Prepare TDX quote and event log if needed
+    let (tdx_quote, tdx_event_log) = if mode.has_tdx() {
+        let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
+        let quote = get_quote(&report_data).context("Failed to get TDX quote")?;
+        let event_logs = read_runtime_event_logs().context("Failed to read event logs")?;
+        let event_log =
+            serde_json::to_vec(&event_logs).context("Failed to serialize RTMR3 events")?;
+        let event_log =
+            compress_event_log(&event_log).context("Failed to compress RTMR3 events")?;
+        (Some(quote), Some(event_log))
+    } else {
+        (None, None)
+    };
 
+    // Build certificate request with all extensions
     let req = CertRequest::builder()
         .subject("RA-TLS TEMP Cert")
-        .quote(&quote)
-        .event_log(&event_log)
         .key(&key)
+        .maybe_attestation_mode(Some(mode))
+        .maybe_tdx_quote(tdx_quote.as_deref())
+        .maybe_tdx_event_log(tdx_event_log.as_deref())
+        .maybe_tpm_quote(attestation.tpm_quote.as_ref())
         .build();
     let cert = ca.sign(req).context("Failed to sign certificate")?;
     Ok(CertPair {
@@ -411,7 +570,7 @@ mod tests {
         let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let pubkey = key_pair.public_key_der();
 
-        let csr = CertSigningRequest {
+        let csr = CertSigningRequestV1 {
             confirm: "please sign cert:".to_string(),
             pubkey: pubkey.clone(),
             config: CertConfig {
@@ -439,7 +598,7 @@ mod tests {
         let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let pubkey = key_pair.public_key_der();
 
-        let csr = CertSigningRequest {
+        let csr = CertSigningRequestV1 {
             confirm: "wrong confirm word".to_string(),
             pubkey: pubkey.clone(),
             config: CertConfig {

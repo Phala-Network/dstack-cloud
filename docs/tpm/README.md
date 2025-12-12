@@ -4,6 +4,55 @@
 
 ## 📚 文档分类
 
+### 0. GCP PCR Analysis and Security ⭐ 完整研究
+
+**核心发现**: PCR 2 是唯一能唯一标识 dstack 系统镜像的 PCR
+
+- **[PCR_RESEARCH_SUMMARY.md](PCR_RESEARCH_SUMMARY.md)** - 📖 **快速入门 - 从这里开始**
+  - 研究问题和答案总结
+  - 哪些 PCR 可用于镜像验证
+  - ⚠️ 关键发现：OVMF hash 不在任何 PCR 中
+  - 如何预计算 PCR 值
+  - 安全模型和风险评估
+  - 实施清单
+
+- **[GCP_PCR_ANALYSIS.md](GCP_PCR_ANALYSIS.md)** - 📊 **技术深度分析**
+  - 完整的 Event Log 分析
+  - 每个 PCR 的详细测量内容
+  - PCR 0: OVMF 固件版本（非固件 hash）
+  - PCR 2: UKI 完整二进制 hash ⭐ **最关键**
+  - PCR 4: 标准启动事件
+  - 为什么 PCR 8 是零（UKI vs GRUB）
+  - 预计算方法和验证
+
+- **[PCR_POLICY_RECOMMENDATIONS.md](PCR_POLICY_RECOMMENDATIONS.md)** - 🔧 **实施指南**
+  - PCR 验证策略（P0/P1/P2 优先级）
+  - tpm-qvl 集成示例代码
+  - Yocto 构建系统集成
+  - 安全考虑和攻击场景
+  - Secure Boot 分析
+
+- **[pcr3_7_security_analysis.md](/tmp/pcr3_7_security_analysis.md)** - 🔒 **安全影响分析**
+  - PCR 3-7 详细安全评估
+  - Secure Boot 禁用的影响
+  - 当前安全层级分析
+  - 是否应启用 Secure Boot
+  - 风险总结和建议
+
+- **[GCP_FIRMWARE_MRTD_REFERENCE.md](GCP_FIRMWARE_MRTD_REFERENCE.md)** - 📦 **GCP 固件参考测量值**
+  - ⚠️ 关键发现：vTPM 无固件 MRTD
+  - TDX/SEV-SNP 固件参考值获取方法
+  - Cloud Storage bucket 访问指南
+  - gce-tcb-verifier 工具使用
+  - vTPM vs TDX/SEV-SNP 安全对比
+
+- **[calculate_pcr.py](calculate_pcr.py)** - 🛠️ **PCR 计算工具**
+  - 从 Event Log 重放计算 PCR
+  - 预计算 PCR 0（固件版本）
+  - 预计算 PCR 2（UKI hash）⭐ 用于构建系统
+  - 支持 verbose 模式查看详细步骤
+  - 验证功能
+
 ### 1. TPM Quote 结构和验证
 
 #### 核心文档
@@ -115,6 +164,24 @@
 
 ## 🚀 快速开始
 
+### 计算和验证 PCR 值 ⭐ 推荐
+
+```bash
+# 1. 从 testgcp 下载 Event Log
+ssh testgcp 'tpm2_eventlog /sys/kernel/security/tpm0/binary_bios_measurements 2>/dev/null' > eventlog.yaml
+
+# 2. 计算 PCR 0, 2, 4 值
+./docs/tpm/calculate_pcr.py --eventlog eventlog.yaml --pcr 0,2,4
+
+# 3. 查看详细计算过程
+./docs/tpm/calculate_pcr.py --eventlog eventlog.yaml --pcr 0 --verbose
+
+# 4. 从 bootloader 哈希计算 PCR 2（用于提前计算）
+./docs/tpm/calculate_pcr.py --build-pcr2 \
+    --bootloader build/tmp/deploy/images/*/grub-efi-bootx64.efi \
+    --verbose
+```
+
 ### 在GCP VM上进行vTPM Attestation
 
 ```bash
@@ -147,14 +214,17 @@
 3. 运行 [gcp-vtpm-attest-minimal.sh](gcp-vtpm-attest-minimal.sh) 体验实际attestation
 
 ### 进阶
-1. 阅读 [TPM_QUOTE_STRUCTURE.md](TPM_QUOTE_STRUCTURE.md) 深入了解Quote结构
-2. 阅读 [QUOTE_EVENTLOG_VERIFICATION.md](QUOTE_EVENTLOG_VERIFICATION.md) 理解安全性
-3. 阅读 [CERTIFICATE-PURPOSE-VALIDATION.md](CERTIFICATE-PURPOSE-VALIDATION.md) 了解证书验证
+1. ⭐ 阅读 [GCP_PCR_ANALYSIS.md](GCP_PCR_ANALYSIS.md) 了解 PCR 和系统镜像验证
+2. 阅读 [TPM_QUOTE_STRUCTURE.md](TPM_QUOTE_STRUCTURE.md) 深入了解Quote结构
+3. 阅读 [QUOTE_EVENTLOG_VERIFICATION.md](QUOTE_EVENTLOG_VERIFICATION.md) 理解安全性
+4. 阅读 [CERTIFICATE-PURPOSE-VALIDATION.md](CERTIFICATE-PURPOSE-VALIDATION.md) 了解证书验证
 
 ### 开发者
-1. 研究验证脚本的实现
-2. 参考Python/Bash代码示例
-3. 根据需求定制验证逻辑
+1. ⭐ 使用 [calculate_pcr.py](calculate_pcr.py) 计算和验证 PCR 值
+2. 研究验证脚本的实现
+3. 参考Python/Bash代码示例
+4. 根据需求定制验证逻辑
+5. 在构建系统中集成 PCR 预计算
 
 ## 🔑 关键概念
 
@@ -246,6 +316,10 @@ openssl verify -CAfile root_ca.pem intermediate_ca.pem
 ## 📂 文件列表
 
 ### 文档 (Markdown)
+- ⭐ GCP_PCR_ANALYSIS.md (PCR 分析和预计算)
+- ⭐ PCR_RESEARCH_SUMMARY.md (PCR 研究总结 - 快速参考)
+- ⭐ PCR_POLICY_RECOMMENDATIONS.md (PCR 策略实施指南)
+- ⭐ GCP_FIRMWARE_MRTD_REFERENCE.md (GCP 固件参考测量值)
 - CERTIFICATE-PURPOSE-VALIDATION.md
 - CA-TRUST-MODEL-COMPARISON.md
 - TPM_QUOTE_STRUCTURE.md
@@ -260,6 +334,7 @@ openssl verify -CAfile root_ca.pem intermediate_ca.pem
 - root_ca_full.txt
 
 ### 脚本 (可执行)
+- ⭐ calculate_pcr.py (NEW - PCR 计算工具)
 - analyze_tpm_quote.sh
 - verify_quote_eventlog.sh
 - gcp-vtpm-attest-minimal.sh ⭐ 推荐

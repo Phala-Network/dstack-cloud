@@ -746,7 +746,7 @@ impl<'a> Stage0<'a> {
         let tpm = TpmContext::detect().context("failed to detect TPM context")?;
 
         // Get PCR policy for sealing (boot chain + app PCR)
-        let pcr_policy = tpm::default_pcr_policy();
+        let pcr_policy = tpm::dstack_pcr_policy();
 
         // Extend app PCR with app-compose hash BEFORE unsealing
         // This ensures the sealed data is bound to this specific app configuration

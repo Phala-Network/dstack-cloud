@@ -16,10 +16,10 @@ use dstack_verifier::CvmVerifier;
 use fs_err as fs;
 use hex_fmt::HexFmt;
 use k256::ecdsa::SigningKey;
-use ra_rpc::{Attestation, CallContext, RpcCall};
+use ra_rpc::{CallContext, RpcCall};
 use ra_tls::{
     attestation::VerifiedAttestation,
-    cert::{CaCert, CertRequest, CertSigningRequest},
+    cert::{CaCert, CertRequest, CertSigningRequestV1, CertSigningRequestV2, Csr},
     kdf,
 };
 use scale::Decode;
@@ -202,8 +202,10 @@ impl RpcHandler {
         use_boottime_mr: bool,
         vm_config: &str,
     ) -> Result<BootConfig> {
-        let report = att
-            .report
+        let Some(tdx_report) = &att.report.tdx_report else {
+            bail!("No TD report in attestation");
+        };
+        let report = tdx_report
             .report
             .as_td10()
             .context("Failed to decode TD report")?;
@@ -226,10 +228,8 @@ impl RpcHandler {
             instance_id: app_info.instance_id,
             device_id: app_info.device_id,
             key_provider_info: app_info.key_provider_info,
-            event_log: String::from_utf8(att.raw_event_log.clone())
-                .context("Failed to serialize event log")?,
-            tcb_status: att.report.status.clone(),
-            advisory_ids: att.report.advisory_ids.clone(),
+            tcb_status: tdx_report.status.clone(),
+            advisory_ids: tdx_report.advisory_ids.clone(),
         };
         let response = self
             .state
@@ -389,11 +389,25 @@ impl KmsRpc for RpcHandler {
         if request.api_version > 1 {
             bail!("Unsupported API version: {}", request.api_version);
         }
-        let csr =
-            CertSigningRequest::decode(&mut &request.csr[..]).context("Failed to parse csr")?;
-        csr.verify(&request.signature)
-            .context("Failed to verify csr signature")?;
-        let attestation = Attestation::new(csr.quote.clone(), csr.event_log.clone())
+        let csr = match request.api_version {
+            1 => {
+                let csr = CertSigningRequestV1::decode(&mut &request.csr[..])
+                    .context("Failed to parse csr")?;
+                csr.verify(&request.signature)
+                    .context("Failed to verify csr signature")?;
+                csr.into()
+            }
+            2 => {
+                let csr = CertSigningRequestV2::decode(&mut &request.csr[..])
+                    .context("Failed to parse csr")?;
+                csr.verify(&request.signature)
+                    .context("Failed to verify csr signature")?;
+                csr
+            }
+            _ => bail!("Unsupported API version: {}", request.api_version),
+        };
+        let attestation = csr.to_attestation();
+        let attestation = attestation
             .context("Failed to create attestation from quote and event log")?
             .verify_with_ra_pubkey(&csr.pubkey, self.state.config.pccs_url.as_deref())
             .await

@@ -32,7 +32,7 @@ dcap-qvl-webpki = { version = "0.103", features = ["alloc", "ring"] }
 pem = "3.0"
 
 # TPM quote data structures
-tpm-attest.workspace = true
+tpm-types.workspace = true
 
 # CRL download (optional)
 reqwest = { version = "0.12", features = [

@@ -162,8 +162,8 @@ impl Keys {
             .subject(domain)
             .alt_names(&[domain.to_string()])
             .special_usage("kms:rpc")
-            .maybe_quote(quote.as_deref())
-            .maybe_event_log(event_log.as_deref())
+            .maybe_tdx_quote(quote.as_deref())
+            .maybe_tdx_event_log(event_log.as_deref())
             .key(&rpc_key)
             .build()
             .signed_by(&ca_cert, &ca_key)?;
@@ -352,8 +352,8 @@ async fn gen_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<(String,
     let event_log: Vec<u8> = quote_res.event_log.into();
     let req = CertRequest::builder()
         .subject("RA-TLS TEMP Cert")
-        .quote(&quote)
-        .event_log(&event_log)
+        .tdx_quote(&quote)
+        .tdx_event_log(&event_log)
         .key(&key)
         .build();
     let cert = ca.sign(req).context("Failed to sign certificate")?;

@@ -271,7 +271,6 @@ pub struct VerificationResult {
     pub ek_verified: bool,
     pub signature_verified: bool,
     pub pcr_verified: bool,
-    pub qualifying_data_verified: bool,
     pub error_message: Option<String>,
 }
 ```

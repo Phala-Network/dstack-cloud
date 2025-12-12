@@ -5,7 +5,6 @@
 //! RATLS library for Phala
 #![deny(missing_docs)]
 
-pub extern crate dcap_qvl as qvl;
 pub extern crate rcgen;
 
 pub mod attestation;

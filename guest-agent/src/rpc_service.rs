@@ -140,24 +140,17 @@ pub struct InternalRpcHandler {
 
 pub async fn get_info(state: &AppState, external: bool) -> Result<AppInfo> {
     let hide_tcb_info = external && !state.config().app_compose.public_tcbinfo;
-    let response = InternalRpcHandler {
-        state: state.clone(),
-    }
-    .get_quote(RawQuoteArgs {
-        report_data: [0; 64].to_vec(),
-        quote_type: String::new(),
-    })
-    .await;
-    let Ok(response) = response else {
-        return Ok(AppInfo::default());
-    };
-    let Ok(attestation) = Attestation::new(response.quote, response.event_log.into()) else {
+    let Ok(attestation) = Attestation::local() else {
         return Ok(AppInfo::default());
     };
     let app_info = attestation
         .decode_app_info(false)
         .context("Failed to decode app info")?;
-    let event_log = &attestation.event_log;
+    let event_log = attestation
+        .tdx_quote
+        .as_ref()
+        .map(|q| &q.event_log[..])
+        .unwrap_or_default();
     let tcb_info = if hide_tcb_info {
         "".to_string()
     } else {
@@ -317,7 +310,7 @@ impl DstackGuestRpc for InternalRpcHandler {
             }
             "tpm" => {
                 let tpm = tpm_attest::TpmContext::detect().context("Failed to open TPM context")?;
-                let pcr_selection = tpm_attest::default_pcr_policy();
+                let pcr_selection = tpm_attest::dstack_pcr_policy();
                 let tpm_quote = tpm
                     .create_quote(&report_data, &pcr_selection)
                     .context("Failed to create TPM quote")?;

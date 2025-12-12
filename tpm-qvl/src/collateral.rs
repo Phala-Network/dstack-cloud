@@ -11,11 +11,17 @@ use anyhow::{bail, Context, Result};
 use tracing::{debug, warn};
 use x509_parser::{extensions::DistributionPointName, prelude::*};
 
-use tpm_attest::TpmQuote;
+use tpm_types::TpmQuote;
 
-use crate::QuoteCollateral;
+use crate::{get_root_ca, verify::VerifiedReport, QuoteCollateral};
 
-pub fn get_collateral(quote: &TpmQuote, root_ca_pem: &str) -> Result<QuoteCollateral> {
+pub async fn get_collateral_and_verify(quote: &TpmQuote) -> Result<VerifiedReport> {
+    let root_ca_pem = get_root_ca(quote.platform).context("failed to get root CA")?;
+    let collateral = get_collateral(quote, root_ca_pem).await?;
+    crate::verify::verify_quote_with_ca(quote, &collateral, root_ca_pem).map_err(Into::into)
+}
+
+pub async fn get_collateral(quote: &TpmQuote, root_ca_pem: &str) -> Result<QuoteCollateral> {
     debug!("fetching quote collateral (intermediate cert chain + CRLs)");
 
     let ak_cert_der = &quote.ak_cert;

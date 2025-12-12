@@ -12,41 +12,25 @@
 //! For quote verification, see the tpm-qvl crate.
 
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
-use serde_human_bytes as hex_bytes;
 use std::path::Path;
 use tracing::{debug, warn};
+
+// Re-export tpm-types
+pub use tpm_types::{PcrSelection, PcrValue, TpmQuote};
 
 mod esapi_impl;
 use esapi_impl::EsapiContext;
 
 pub const PRIMARY_KEY_HANDLE: u32 = 0x81000100;
 pub const SEALED_NV_INDEX: u32 = 0x01801101;
+
+/// PCR selection for DStack
+/// 0: The firmware version and NonHostInfo (representing the memory encryption technology)
+/// 2: The uki image (kernel + initrd + initramfs)
+/// 14: The app compose hash
 pub const APP_PCR: u32 = 14;
-
-pub fn default_pcr_policy() -> PcrSelection {
-    PcrSelection::sha256(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, APP_PCR])
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TpmQuote {
-    #[serde(with = "hex_bytes")]
-    pub message: Vec<u8>,
-    #[serde(with = "hex_bytes")]
-    pub signature: Vec<u8>,
-    pub pcr_values: Vec<PcrValue>,
-    #[serde(with = "hex_bytes")]
-    pub qualifying_data: Vec<u8>,
-    #[serde(with = "hex_bytes")]
-    pub ak_cert: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PcrValue {
-    pub index: u32,
-    pub algorithm: String,
-    #[serde(with = "hex_bytes")]
-    pub value: Vec<u8>,
+pub fn dstack_pcr_policy() -> PcrSelection {
+    PcrSelection::sha256(&[0, 2, APP_PCR])
 }
 
 pub struct TpmContext {
@@ -58,40 +42,6 @@ impl std::fmt::Debug for TpmContext {
         f.debug_struct("TpmContext")
             .field("tcti", &self.tcti)
             .finish()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PcrSelection {
-    pub bank: String,
-    pub pcrs: Vec<u32>,
-}
-
-impl PcrSelection {
-    pub fn new(bank: &str, pcrs: &[u32]) -> Self {
-        Self {
-            bank: bank.to_string(),
-            pcrs: pcrs.to_vec(),
-        }
-    }
-
-    pub fn sha256(pcrs: &[u32]) -> Self {
-        Self::new("sha256", pcrs)
-    }
-
-    pub fn to_arg(&self) -> String {
-        let pcr_list: Vec<String> = self.pcrs.iter().map(|p| p.to_string()).collect();
-        format!(
-            "{}:{pcr_list_joined}",
-            self.bank,
-            pcr_list_joined = pcr_list.join(",")
-        )
-    }
-}
-
-impl Default for PcrSelection {
-    fn default() -> Self {
-        Self::sha256(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
     }
 }
 
@@ -372,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_default_pcr_policy() {
-        let policy = default_pcr_policy();
+        let policy = dstack_pcr_policy();
         assert_eq!(policy.to_arg(), "sha256:0,1,2,3,4,5,6,7,8,9,14");
     }
 }

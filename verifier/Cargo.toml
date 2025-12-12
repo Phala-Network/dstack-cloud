@@ -43,6 +43,8 @@ dstack-mr.workspace = true
 dcap-qvl.workspace = true
 cc-eventlog.workspace = true
 sha2.workspace = true
+tpm-qvl.workspace = true
+tpm-types.workspace = true
 
 [features]
 default = ["binary"]

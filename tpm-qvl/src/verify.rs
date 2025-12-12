@@ -4,20 +4,38 @@
 
 //! TPM Quote Verification Module
 
+use ::pem::parse_many;
 use anyhow::{anyhow, bail, Context, Result};
+use dstack_types::Platform;
 use p256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
 use rsa::RsaPublicKey;
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 use x509_parser::prelude::*;
-use ::pem::parse_many;
 
 use rustls_pki_types::{CertificateDer, UnixTime};
 use webpki::{BorrowedCertRevocationList, CertRevocationList, EndEntityCert};
 
-use tpm_attest::{PcrValue, TpmQuote};
+use tpm_types::{PcrValue, TpmQuote};
 
-use crate::{QuoteCollateral, VerificationResult, VerificationStatus};
+use crate::{get_root_ca, QuoteCollateral, VerificationError, VerificationStatus};
+
+#[derive(Clone)]
+pub struct VerifiedReport {
+    pub attest: TpmAttest,
+    pub platform: Platform,
+    pub pcr_values: Vec<PcrValue>,
+}
+
+impl VerifiedReport {
+    pub fn get_pcr(&self, index: u32) -> Result<Vec<u8>> {
+        self.pcr_values
+            .iter()
+            .find(|p| p.index == index)
+            .map(|p| p.value.clone())
+            .ok_or(anyhow!("PCR {} not found", index))
+    }
+}
 
 #[derive(Debug)]
 enum PublicKey {
@@ -25,49 +43,50 @@ enum PublicKey {
     Ecc(VerifyingKey),
 }
 
+/// Verify quote with collateral and library-bundled root CA
+pub fn verify_quote(
+    quote: &TpmQuote,
+    collateral: &QuoteCollateral,
+) -> Result<VerifiedReport, VerificationError> {
+    let ca = get_root_ca(quote.platform).map_err(|e| VerificationError {
+        status: VerificationStatus::default(),
+        error: e,
+    })?;
+    verify_quote_with_ca(quote, collateral, ca)
+}
+
 /// Verify quote with collateral and user-provided root CA (recommended for security)
 ///
 /// The root CA is provided by the verifier as an independent trust anchor,
 /// not derived from device-provided collateral. This prevents attacks where
 /// a malicious device provides a fake certificate chain including a fake root CA.
-pub fn verify_quote(
+pub fn verify_quote_with_ca(
     quote: &TpmQuote,
     collateral: &QuoteCollateral,
     root_ca_pem: &str,
-) -> Result<(), VerificationResult> {
+) -> Result<VerifiedReport, VerificationError> {
     let mut status = VerificationStatus::default();
 
-    let attest = match parse_tpms_attest(&quote.message) {
+    let attest = match parse_tpm_attest(&quote.message) {
         Ok(a) => a,
         Err(e) => {
-            return Err(VerificationResult {
+            return Err(VerificationError {
                 status,
                 error: e.context("failed to parse TPMS_ATTEST"),
             });
         }
     };
 
-    if attest.extra_data != quote.qualifying_data {
-        return Err(VerificationResult {
-            status,
-            error: anyhow!(
-                "qualifying data mismatch: expected {} bytes, got {} bytes",
-                quote.qualifying_data.len(),
-                attest.extra_data.len()
-            ),
-        });
-    }
-    status.qualifying_data_verified = true;
-
-    let attested_pcr_indices = parse_pcr_selection(&attest.attested_quote_info.pcr_select)
-        .map_err(|error| VerificationResult {
-            status: status.clone(),
-            error,
-        })?;
+    let attested_pcr_indices: Vec<u32> = attest
+        .attested_quote_info
+        .pcr_selections
+        .iter()
+        .flat_map(|s| s.pcr_indices.iter().copied())
+        .collect();
     let provided_pcr_indices: Vec<u32> = quote.pcr_values.iter().map(|p| p.index).collect();
 
     if attested_pcr_indices != provided_pcr_indices {
-        return Err(VerificationResult {
+        return Err(VerificationError {
             status,
             error: anyhow!(
                 "PCR selection mismatch: TPMS_ATTEST has {:?}, but pcr_values has {:?}",
@@ -78,12 +97,12 @@ pub fn verify_quote(
     }
 
     let computed_pcr_digest =
-        compute_pcr_digest(&quote.pcr_values).map_err(|e| VerificationResult {
+        compute_pcr_digest(&quote.pcr_values).map_err(|e| VerificationError {
             status: status.clone(),
             error: e,
         })?;
     if attest.attested_quote_info.pcr_digest != computed_pcr_digest {
-        return Err(VerificationResult {
+        return Err(VerificationError {
             status,
             error: anyhow!("PCR digest mismatch"),
         });
@@ -96,7 +115,7 @@ pub fn verify_quote(
             key
         }
         Err(e) => {
-            return Err(VerificationResult {
+            return Err(VerificationError {
                 status,
                 error: e.context("failed to extract AK public key from certificate"),
             });
@@ -106,13 +125,13 @@ pub fn verify_quote(
     match verify_signature_with_key(&quote.message, &quote.signature, &ak_public_key) {
         Ok(true) => status.signature_verified = true,
         Ok(false) => {
-            return Err(VerificationResult {
+            return Err(VerificationError {
                 status,
                 error: anyhow!("signature verification failed"),
             });
         }
         Err(e) => {
-            return Err(VerificationResult {
+            return Err(VerificationError {
                 status,
                 error: e.context("signature verification error"),
             });
@@ -120,50 +139,59 @@ pub fn verify_quote(
     }
 
     match verify_ak_chain_with_collateral(&quote.ak_cert, collateral, root_ca_pem) {
-        Ok(true) => status.ak_verified = true,
-        Ok(false) => {
-            return Err(VerificationResult {
-                status,
-                error: anyhow!("AK certificate chain verification failed"),
-            });
-        }
+        Ok(()) => {}
         Err(e) => {
-            return Err(VerificationResult {
+            return Err(VerificationError {
                 status,
                 error: e.context("AK certificate chain verification error"),
             });
         }
     }
 
-    Ok(())
+    Ok(VerifiedReport {
+        attest,
+        platform: quote.platform,
+        pcr_values: quote.pcr_values.clone(),
+    })
 }
 
-#[derive(Debug)]
-pub(crate) struct TpmsAttest {
+#[derive(Debug, Clone)]
+pub struct TpmAttest {
     pub magic: u32,
     pub type_: u16,
     pub qualified_signer: Vec<u8>,
-    pub extra_data: Vec<u8>,
+    pub qualified_data: Vec<u8>,
     pub clock_info: ClockInfo,
     pub firmware_version: u64,
     pub attested_quote_info: QuoteInfo,
 }
 
-#[derive(Debug)]
-pub(crate) struct ClockInfo {
+#[derive(Debug, Clone)]
+pub struct ClockInfo {
     pub clock: u64,
     pub reset_count: u32,
     pub restart_count: u32,
     pub safe: u8,
 }
 
-#[derive(Debug)]
-pub(crate) struct QuoteInfo {
-    pub pcr_select: Vec<u8>,
+/// PCR selection entry from TPM quote
+#[derive(Debug, Clone)]
+pub struct PcrSelection {
+    /// Hash algorithm (e.g., 0x000B for SHA-256)
+    pub hash_alg: u16,
+    /// Selected PCR indices
+    pub pcr_indices: Vec<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuoteInfo {
+    /// PCR selections from the quote
+    pub pcr_selections: Vec<PcrSelection>,
+    /// PCR digest
     pub pcr_digest: Vec<u8>,
 }
 
-fn parse_tpms_attest(data: &[u8]) -> Result<TpmsAttest> {
+fn parse_tpm_attest(data: &[u8]) -> Result<TpmAttest> {
     use nom::bytes::complete::take;
     use nom::number::complete::{be_u16, be_u32, be_u64, be_u8};
     use nom::IResult;
@@ -174,11 +202,11 @@ fn parse_tpms_attest(data: &[u8]) -> Result<TpmsAttest> {
         Ok((input, data.to_vec()))
     }
 
-    fn parse_attest(input: &[u8]) -> IResult<&[u8], TpmsAttest> {
+    fn parse_attest(input: &[u8]) -> IResult<&[u8], TpmAttest> {
         let (input, magic) = be_u32(input)?;
         let (input, type_) = be_u16(input)?;
         let (input, qualified_signer) = parse_sized_buffer(input)?;
-        let (input, extra_data) = parse_sized_buffer(input)?;
+        let (input, qualified_data) = parse_sized_buffer(input)?;
 
         let (input, clock) = be_u64(input)?;
         let (input, reset_count) = be_u32(input)?;
@@ -189,18 +217,27 @@ fn parse_tpms_attest(data: &[u8]) -> Result<TpmsAttest> {
 
         let (input, pcr_select_count) = be_u32(input)?;
 
-        let mut pcr_select_data = Vec::new();
-        pcr_select_data.extend_from_slice(&pcr_select_count.to_be_bytes());
-
+        let mut pcr_selections = Vec::new();
         let mut current_input = input;
         for _ in 0..pcr_select_count {
             let (input, hash_alg) = be_u16(current_input)?;
             let (input, sizeof_select) = be_u8(input)?;
             let (input, pcr_bitmap) = take(sizeof_select)(input)?;
 
-            pcr_select_data.extend_from_slice(&hash_alg.to_be_bytes());
-            pcr_select_data.push(sizeof_select);
-            pcr_select_data.extend_from_slice(pcr_bitmap);
+            // Parse PCR bitmap into indices
+            let mut pcr_indices = Vec::new();
+            for (byte_idx, &byte) in pcr_bitmap.iter().enumerate() {
+                for bit_idx in 0..8 {
+                    if (byte & (1 << bit_idx)) != 0 {
+                        pcr_indices.push((byte_idx * 8 + bit_idx) as u32);
+                    }
+                }
+            }
+
+            pcr_selections.push(PcrSelection {
+                hash_alg,
+                pcr_indices,
+            });
 
             current_input = input;
         }
@@ -210,11 +247,11 @@ fn parse_tpms_attest(data: &[u8]) -> Result<TpmsAttest> {
 
         Ok((
             input,
-            TpmsAttest {
+            TpmAttest {
                 magic,
                 type_,
                 qualified_signer,
-                extra_data,
+                qualified_data,
                 clock_info: ClockInfo {
                     clock,
                     reset_count,
@@ -223,7 +260,7 @@ fn parse_tpms_attest(data: &[u8]) -> Result<TpmsAttest> {
                 },
                 firmware_version,
                 attested_quote_info: QuoteInfo {
-                    pcr_select: pcr_select_data,
+                    pcr_selections,
                     pcr_digest,
                 },
             },
@@ -241,45 +278,6 @@ fn parse_tpms_attest(data: &[u8]) -> Result<TpmsAttest> {
     }
 
     Ok(attest)
-}
-
-fn parse_pcr_selection(data: &[u8]) -> Result<Vec<u32>> {
-    use nom::bytes::complete::take;
-    use nom::number::complete::{be_u16, be_u32, be_u8};
-    use nom::IResult;
-
-    fn parse_selection(input: &[u8]) -> IResult<&[u8], Vec<u32>> {
-        let (input, count) = be_u32(input)?;
-
-        let mut all_pcrs = Vec::new();
-        let mut current_input = input;
-
-        for _ in 0..count {
-            let (input, _hash_alg) = be_u16(current_input)?;
-            let (input, sizeof_select) = be_u8(input)?;
-            let (input, pcr_bitmap) = take(sizeof_select)(input)?;
-
-            for (byte_idx, &byte) in pcr_bitmap.iter().enumerate() {
-                for bit_idx in 0..8 {
-                    if (byte & (1 << bit_idx)) != 0 {
-                        let pcr_index = (byte_idx * 8 + bit_idx) as u32;
-                        all_pcrs.push(pcr_index);
-                    }
-                }
-            }
-
-            current_input = input;
-        }
-
-        Ok((current_input, all_pcrs))
-    }
-
-    let (_, mut pcr_indices) =
-        parse_selection(data).map_err(|e| anyhow::anyhow!("failed to parse PCR selection: {e}"))?;
-
-    pcr_indices.sort_unstable();
-
-    Ok(pcr_indices)
 }
 
 fn compute_pcr_digest(pcr_values: &[PcrValue]) -> Result<Vec<u8>> {
@@ -448,7 +446,6 @@ fn verify_signature_with_key(
 }
 
 fn extract_certs_webpki(cert_pem: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
-
     let pem_items = parse_many(cert_pem).context("failed to parse PEM")?;
 
     let certs = pem_items
@@ -463,7 +460,7 @@ fn verify_ak_chain_with_collateral(
     ak_cert_der: &[u8],
     collateral: &QuoteCollateral,
     root_ca_pem: &str,
-) -> Result<bool> {
+) -> Result<()> {
     debug!(
         "verifying AK certificate chain with webpki ({} bytes leaf, {} intermediate CRLs, root CRL: {})",
         ak_cert_der.len(),
@@ -606,11 +603,11 @@ fn verify_ak_chain_with_collateral(
                     collateral.crls.len()
                 );
             }
-            Ok(true)
+            Ok(())
         }
         Err(e) => {
             warn!("✗ AK certificate chain verification failed: {e:?}");
-            Ok(false)
+            Err(e)
         }
     }
 }

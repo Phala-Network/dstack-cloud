@@ -434,8 +434,8 @@ fn cmd_gen_ca_cert(args: GenCaCertArgs) -> Result<()> {
 
     let req = CertRequest::builder()
         .subject("App Root CA")
-        .quote(&quote)
-        .event_log(&event_log)
+        .tdx_quote(&quote)
+        .tdx_event_log(&event_log)
         .key(&key)
         .ca_level(args.ca_level)
         .build();
@@ -506,8 +506,8 @@ fn make_app_keys(
     let event_log = serde_json::to_vec(&event_logs).context("Failed to serialize event logs")?;
     let req = CertRequest::builder()
         .subject("App Root Cert")
-        .quote(&quote)
-        .event_log(&event_log)
+        .tdx_quote(&quote)
+        .tdx_event_log(&event_log)
         .key(app_key)
         .ca_level(ca_level)
         .build();
@@ -772,7 +772,7 @@ fn cmd_tpm_quote(args: TpmQuoteArgs) -> Result<()> {
         .context("Failed to parse key algorithm")?;
 
     let tpm = tpm_attest::TpmContext::open(None).context("Failed to open TPM context")?;
-    let pcr_selection = tpm_attest::default_pcr_policy();
+    let pcr_selection = tpm_attest::dstack_pcr_policy();
     let tpm_quote = tpm
         .create_quote_with_algo(&qualifying_data, &pcr_selection, key_algo)
         .context("Failed to create TPM quote")?;
@@ -790,7 +790,7 @@ fn cmd_tpm_quote(args: TpmQuoteArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_tpm_verify(args: TpmVerifyArgs) -> Result<()> {
+async fn cmd_tpm_verify(args: TpmVerifyArgs) -> Result<()> {
     let root_ca_pem = fs::read_to_string(&args.root_ca).context("Failed to read root CA")?;
     let quote_json = fs::read_to_string(&args.quote).context("Failed to read quote file")?;
     let tpm_quote: tpm_attest::TpmQuote =
@@ -803,8 +803,9 @@ fn cmd_tpm_verify(args: TpmVerifyArgs) -> Result<()> {
 
     // Step 1: Get collateral (certificates + CRLs)
     println!("[Step 1] Fetching quote collateral (certificates + CRLs)...");
-    let collateral =
-        tpm_qvl::get_collateral(&tpm_quote, &root_ca_pem).context("Failed to get collateral")?;
+    let collateral = tpm_qvl::get_collateral(&tpm_quote, &root_ca_pem)
+        .await
+        .context("Failed to get collateral")?;
     let crl_count = collateral.crls.len()
         + if collateral.root_ca_crl.is_some() {
             1
@@ -817,8 +818,8 @@ fn cmd_tpm_verify(args: TpmVerifyArgs) -> Result<()> {
     // Step 2: Verify quote with conditional CRL checking
     println!("[Step 2] Verifying quote (CRL verification if CRL DP present)...");
 
-    match tpm_qvl::verify_quote(&tpm_quote, &collateral, &root_ca_pem) {
-        Ok(()) => {
+    match tpm_qvl::verify::verify_quote_with_ca(&tpm_quote, &collateral, &root_ca_pem) {
+        Ok(_) => {
             // Success - print simple success message
             println!();
             let crl_count = collateral.crls.len()
@@ -860,14 +861,6 @@ fn cmd_tpm_verify(args: TpmVerifyArgs) -> Result<()> {
             println!(
                 "  PCR Values: {}",
                 if verification_result.status.pcr_verified {
-                    "✓ VERIFIED"
-                } else {
-                    "✗ FAILED"
-                }
-            );
-            println!(
-                "  Qualifying Data: {}",
-                if verification_result.status.qualifying_data_verified {
                     "✓ VERIFIED"
                 } else {
                     "✗ FAILED"
@@ -940,7 +933,7 @@ async fn main() -> Result<()> {
             cmd_tpm_quote(args)?;
         }
         Commands::TpmVerify(args) => {
-            cmd_tpm_verify(args)?;
+            cmd_tpm_verify(args).await?;
         }
     }
 

@@ -36,7 +36,6 @@ pub(crate) struct BootInfo {
     pub device_id: Vec<u8>,
     #[serde(with = "hex_bytes")]
     pub key_provider_info: Vec<u8>,
-    pub event_log: String,
     pub tcb_status: String,
     pub advisory_ids: Vec<String>,
 }

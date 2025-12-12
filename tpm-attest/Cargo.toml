@@ -19,6 +19,8 @@ sha2 = { workspace = true, features = ["oid"] }
 tempfile.workspace = true
 tracing.workspace = true
 fs-err.workspace = true
+tpm-types.workspace = true
+dstack-types.workspace = true
 
 # TPM 2.0 TSS ESAPI for low-level TPM operations
 tss-esapi = "7.5"

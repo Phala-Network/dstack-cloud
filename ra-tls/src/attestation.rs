@@ -4,16 +4,18 @@
 
 //! Attestation functions
 
-use std::borrow::Cow;
+use std::{borrow::Cow, str::FromStr};
 
 use anyhow::{anyhow, bail, Context, Result};
-use dcap_qvl::quote::Quote;
-use qvl::{
-    quote::{EnclaveReport, Report, TDReport10, TDReport15},
-    verify::VerifiedReport,
+use dcap_qvl::{
+    quote::{EnclaveReport, Quote, Report, TDReport10, TDReport15},
+    verify::VerifiedReport as TdxVerifiedReport,
 };
+use dstack_types::Platform;
+use scale::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
+use tpm_qvl::verify::VerifiedReport as TpmVerifiedReport;
 use x509_parser::parse_x509_certificate;
 
 use crate::{oids, traits::CertExt};
@@ -21,80 +23,86 @@ use cc_eventlog::TdxEventLogEntry as EventLog;
 use or_panic::ResultOrPanic;
 use serde_human_bytes as hex_bytes;
 
+// Re-export TpmQuote from tpm-types
+pub use tpm_types::TpmQuote;
+
 /// Attestation mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 pub enum AttestationMode {
     /// Intel TDX with DCAP quote only
-    Tdx,
-    /// TPM 2.0 quote only
-    Tpm,
-    /// Both TDX and TPM (dual mode)
-    #[serde(rename = "tdx+tpm")]
-    TdxTpm,
+    #[serde(rename = "dstack-tdx")]
+    DstackTdx,
+    /// GCP TDX with DCAP quote only
+    #[serde(rename = "gcp-tdx")]
+    GcpTdx,
+    /// Dstack attestation SDK in AWS Nitro Enclave
+    #[serde(rename = "dstack-nitro")]
+    DstackNitro,
+}
+
+impl FromStr for AttestationMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "dstack-tdx" => Ok(Self::DstackTdx),
+            "gcp-tdx" => Ok(Self::GcpTdx),
+            "dstack-nitro" => Ok(Self::DstackNitro),
+            _ => bail!("Invalid attestation mode: {s}"),
+        }
+    }
 }
 
 impl AttestationMode {
     /// Get string representation
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Tdx => "tdx",
-            Self::Tpm => "tpm",
-            Self::TdxTpm => "tdx+tpm",
-        }
-    }
-
-    /// Parse from string
-    pub fn from_str(s: &str) -> Result<Self> {
-        match s.to_lowercase().as_str() {
-            "tdx" => Ok(Self::Tdx),
-            "tpm" => Ok(Self::Tpm),
-            "tdx+tpm" => Ok(Self::TdxTpm),
-            _ => bail!("Invalid attestation mode: {s}"),
+            Self::DstackTdx => "dstack-tdx",
+            Self::GcpTdx => "gcp-tdx",
+            Self::DstackNitro => "dstack-nitro",
         }
     }
 
     /// Detect attestation mode from system
     pub fn detect() -> Result<Self> {
-        // First, try to detect platform from DMI board name
-        if let Ok(board_name) = std::fs::read_to_string("/sys/class/dmi/id/board_name") {
-            let board_name = board_name.trim();
-            match board_name {
-                "dstack" => {
-                    // dstack platform: TDX only (no TPM)
-                    return Ok(Self::Tdx);
-                }
-                "Google Compute Engine" => {
-                    // GCP platform: TDX + TPM dual mode
-                    return Ok(Self::TdxTpm);
-                }
-                _ => {
-                    // Unknown board name, fall through to device detection
-                }
-            }
-        }
-
         // Fallback: detect from available devices
         let has_tdx = std::path::Path::new("/dev/tdx_guest").exists();
-        let has_tpm = std::path::Path::new("/dev/tpmrm0").exists()
-            || std::path::Path::new("/dev/tpm0").exists();
 
-        match (has_tdx, has_tpm) {
-            (true, true) => Ok(Self::TdxTpm),  // Both available
-            (true, false) => Ok(Self::Tdx),    // TDX only
-            (false, true) => Ok(Self::Tpm),    // TPM only
-            (false, false) => bail!("No attestation device found"),
+        // First, try to detect platform from DMI board name
+        let platform = Platform::detect().context("Failed to detect platform")?;
+        match platform {
+            Platform::Dstack => {
+                if has_tdx {
+                    return Ok(Self::DstackTdx);
+                }
+                bail!("Unsupported platform: Dstack");
+            }
+            Platform::Gcp => {
+                // GCP platform: TDX + TPM dual mode
+                if has_tdx {
+                    return Ok(Self::GcpTdx);
+                }
+                bail!("Unsupported platform: GCP");
+            }
         }
     }
 
-    /// Check if TDX quote is included
+    /// Check if TDX quote should be included
     pub fn has_tdx(&self) -> bool {
-        matches!(self, Self::Tdx | Self::TdxTpm)
+        match self {
+            Self::DstackTdx => true,
+            Self::GcpTdx => true,
+            Self::DstackNitro => false,
+        }
     }
 
-    /// Check if TPM quote is included
+    /// Check if TPM quote should be included
     pub fn has_tpm(&self) -> bool {
-        matches!(self, Self::Tpm | Self::TdxTpm)
+        match self {
+            Self::DstackTdx => false,
+            Self::GcpTdx => true,
+            Self::DstackNitro => true,
+        }
     }
 }
 
@@ -170,75 +178,95 @@ impl QuoteContentType<'_> {
     }
 }
 
-/// PCR value in TPM quote
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PcrValue {
-    /// PCR index
-    pub index: u32,
-    /// PCR value (32 bytes for SHA256)
-    #[serde(with = "hex_bytes")]
-    pub value: Vec<u8>,
+/// Represents a verified attestation
+#[derive(Clone)]
+pub struct DstackVerifiedReport {
+    /// The verified TDX report
+    pub tdx_report: Option<TdxVerifiedReport>,
+    /// The verified TPM report
+    pub tpm_report: Option<TpmVerifiedReport>,
 }
 
-/// TPM Quote data
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TpmQuoteData {
-    /// TPM Quote message (TPMS_ATTEST)
-    #[serde(with = "hex_bytes")]
-    pub message: Vec<u8>,
+fn get_report_data(report: &TdxVerifiedReport) -> [u8; 64] {
+    match report.report {
+        Report::SgxEnclave(enclave_report) => enclave_report.report_data,
+        Report::TD10(tdreport10) => tdreport10.report_data,
+        Report::TD15(tdreport15) => tdreport15.base.report_data,
+    }
+}
 
-    /// TPM Quote signature
-    #[serde(with = "hex_bytes")]
-    pub signature: Vec<u8>,
+impl DstackVerifiedReport {
+    /// Check if the report is empty
+    pub fn is_empty(&self) -> bool {
+        self.tdx_report.is_none() && self.tpm_report.is_none()
+    }
 
-    /// PCR values included in quote
-    pub pcr_values: Vec<PcrValue>,
+    /// Ensure report data matches
+    pub fn ensure_report_data(&self, report_data: Option<[u8; 64]>) -> Result<()> {
+        let expected = match (&self.tdx_report, report_data) {
+            (Some(tdx_report), Some(rd)) => {
+                let td_report_data = get_report_data(tdx_report);
+                if td_report_data != rd {
+                    bail!("report data mismatch");
+                }
+                td_report_data
+            }
+            (Some(tdx_report), None) => get_report_data(tdx_report),
+            (None, Some(rd)) => rd,
+            (None, None) => return Ok(()),
+        };
 
-    /// AK (Attestation Key) certificate (DER format)
-    #[serde(with = "hex_bytes")]
-    pub ak_cert: Vec<u8>,
-
-    /// Qualifying data (nonce) used in quote
-    #[serde(with = "hex_bytes")]
-    pub qualifying_data: Vec<u8>,
-
-    /// Platform where quote was generated
-    pub platform: dstack_types::Platform,
+        if let Some(tpm_report) = &self.tpm_report {
+            if tpm_report.attest.qualified_data != expected {
+                bail!("report data mismatch");
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Represents a verified attestation
-pub type VerifiedAttestation = Attestation<VerifiedReport>;
+pub type VerifiedAttestation = Attestation<DstackVerifiedReport>;
+
+/// Represents a TDX quote
+#[derive(Clone)]
+pub struct TdxQuote {
+    /// The quote gererated by Intel QE
+    pub quote: Vec<u8>,
+    /// The event log
+    pub event_log: Vec<EventLog>,
+}
 
 /// Attestation data
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Attestation<R = ()> {
     /// Attestation mode
     pub mode: AttestationMode,
 
-    /// Quote (TDX Quote or TPM Quote message)
-    pub quote: Vec<u8>,
+    /// TDX quote (only for TDX mode)
+    pub tdx_quote: Option<TdxQuote>,
 
-    /// Raw event log (TDX event log or empty for TPM mode)
-    pub raw_event_log: Vec<u8>,
-
-    /// Event log (TDX specific)
-    pub event_log: Vec<EventLog>,
+    /// TPM quote (only for TPM mode)
+    pub tpm_quote: Option<TpmQuote>,
 
     /// Verified report
     pub report: R,
-
-    /// TPM specific data (only for TPM mode)
-    pub tpm_data: Option<TpmQuoteData>,
 }
 
 impl<T> Attestation<T> {
     /// Decode the quote
-    pub fn decode_quote(&self) -> Result<Quote> {
-        Quote::parse(&self.quote)
+    pub fn decode_tdx_quote(&self) -> Result<Quote> {
+        let Some(tdx_quote) = &self.tdx_quote else {
+            bail!("tdx_quote not found");
+        };
+        Quote::parse(&tdx_quote.quote)
     }
 
     fn find_event(&self, imr: u32, name: &str) -> Result<EventLog> {
-        for event in &self.event_log {
+        let Some(tdx_quote) = &self.tdx_quote else {
+            bail!("tdx_quote not found");
+        };
+        for event in &tdx_quote.event_log {
             if event.imr == 3 && event.event == "system-ready" {
                 break;
             }
@@ -251,7 +279,10 @@ impl<T> Attestation<T> {
 
     /// Replay event logs
     pub fn replay_rtmr3(&self, to_event: Option<&str>) -> Result<[u8; 48]> {
-        cc_eventlog::replay_event_logs(&self.event_log, to_event, 3)
+        let Some(tdx_quote) = &self.tdx_quote else {
+            bail!("tdx_quote not found");
+        };
+        cc_eventlog::replay_event_logs(&tdx_quote.event_log, to_event, 3)
     }
 
     fn find_event_payload(&self, event: &str) -> Result<Vec<u8>> {
@@ -284,7 +315,7 @@ impl<T> Attestation<T> {
         let rtmr3 = self
             .replay_rtmr3(boottime_mr.then_some("boot-mr-done"))
             .context("Failed to replay event logs")?;
-        let quote = self.decode_quote()?;
+        let quote = self.decode_tdx_quote()?;
         let device_id = sha256(&[&quote.header.user_data]).to_vec();
         let td_report = quote.report.as_td10().context("TDX report not found")?;
         let key_provider_info = if boottime_mr {
@@ -351,8 +382,8 @@ impl<T> Attestation<T> {
     }
 
     /// Decode the report data in the quote
-    pub fn decode_report_data(&self) -> Result<[u8; 64]> {
-        match self.decode_quote()?.report {
+    pub fn decode_tdx_report_data(&self) -> Result<[u8; 64]> {
+        match self.decode_tdx_quote()?.report {
             Report::SgxEnclave(report) => Ok(report.report_data),
             Report::TD10(report) => Ok(report.report_data),
             Report::TD15(report) => Ok(report.base.report_data),
@@ -360,147 +391,39 @@ impl<T> Attestation<T> {
     }
 }
 
+#[cfg(feature = "quote")]
 impl Attestation {
     /// Create an attestation for local machine (auto-detect mode)
     pub fn local() -> Result<Self> {
         let mode = AttestationMode::detect()?;
-        match mode {
-            AttestationMode::Tdx => Self::local_tdx(),
-            AttestationMode::Tpm => Self::local_tpm(),
-            AttestationMode::TdxTpm => Self::local_tdx_tpm(),
-        }
-    }
-
-    /// Create TDX attestation only
-    fn local_tdx() -> Result<Self> {
-        let quote = tdx_attest::get_quote(&[0u8; 64]).context("Failed to get quote")?;
-        let event_log =
-            tdx_attest::eventlog::read_event_logs().context("Failed to read event logs")?;
-        let raw_event_log =
-            serde_json::to_vec(&event_log).context("Failed to serialize event log")?;
-        Ok(Self {
-            mode: AttestationMode::Tdx,
-            quote,
-            raw_event_log,
-            event_log,
-            report: (),
-            tpm_data: None,
-        })
-    }
-
-    /// Create TPM attestation only
-    #[cfg(feature = "tpm-quote")]
-    fn local_tpm() -> Result<Self> {
-        let tpm_data = Self::collect_tpm_quote(&[0, 2, 4, 7])?;
-        Ok(Self {
-            mode: AttestationMode::Tpm,
-            quote: tpm_data.message.clone(),
-            raw_event_log: vec![],
-            event_log: vec![],
-            report: (),
-            tpm_data: Some(tpm_data),
-        })
-    }
-
-    /// Create TPM attestation only (without tpm-quote feature)
-    #[cfg(not(feature = "tpm-quote"))]
-    fn local_tpm() -> Result<Self> {
-        bail!("TPM quote collection requires 'tpm-quote' feature")
-    }
-
-    /// Create both TDX and TPM attestation (dual mode)
-    #[cfg(feature = "tpm-quote")]
-    fn local_tdx_tpm() -> Result<Self> {
-        // Get TDX quote and event log
-        let quote = tdx_attest::get_quote(&[0u8; 64]).context("Failed to get TDX quote")?;
-        let event_log =
-            tdx_attest::eventlog::read_event_logs().context("Failed to read TDX event logs")?;
-        let raw_event_log =
-            serde_json::to_vec(&event_log).context("Failed to serialize event log")?;
-
-        // Get TPM quote
-        let tpm_data = Self::collect_tpm_quote(&[0, 2, 4, 7])?;
-
-        Ok(Self {
-            mode: AttestationMode::TdxTpm,
-            quote,
-            raw_event_log,
-            event_log,
-            report: (),
-            tpm_data: Some(tpm_data),
-        })
-    }
-
-    /// Create both TDX and TPM attestation (without tpm-quote feature)
-    #[cfg(not(feature = "tpm-quote"))]
-    fn local_tdx_tpm() -> Result<Self> {
-        bail!("TPM quote collection requires 'tpm-quote' feature")
-    }
-
-    /// Collect TPM quote with specified PCR indices
-    #[cfg(feature = "tpm-quote")]
-    fn collect_tpm_quote(pcr_indices: &[u32]) -> Result<TpmQuoteData> {
-        use tpm_attest::{TpmContext, PcrSelection};
-
-        // Generate nonce for replay protection (32 bytes random)
-        let nonce = Self::generate_nonce()?;
-
-        // Create TPM context
-        let tpm_ctx = TpmContext::open(None)
-            .context("Failed to open TPM context")?;
-
-        // Create PCR selection
-        let pcr_sel = PcrSelection::sha256(pcr_indices);
-
-        // Generate quote using pre-provisioned AK
-        let quote = tpm_ctx.create_quote(&nonce, &pcr_sel)
-            .context("Failed to create TPM quote")?;
-
-        // Convert tpm-attest format to ra-tls format
-        let pcr_values = quote.pcr_values.iter().map(|p| PcrValue {
-            index: p.index,
-            value: p.value.clone(),
-        }).collect();
-
-        Ok(TpmQuoteData {
-            message: quote.message,
-            signature: quote.signature,
-            pcr_values,
-            ak_cert: quote.ak_cert,
-            qualifying_data: quote.qualifying_data,
-            platform: dstack_types::Platform::detect(),
-        })
-    }
-
-    /// Generate cryptographic nonce for replay protection
-    #[cfg(feature = "tpm-quote")]
-    fn generate_nonce() -> Result<Vec<u8>> {
-        use rand::RngCore;
-        let mut nonce = vec![0u8; 32];
-        rand::thread_rng().fill_bytes(&mut nonce);
-        Ok(nonce)
-    }
-
-    /// Create a new attestation from full event log format (defaults to TDX mode for backward compat)
-    pub fn new(quote: Vec<u8>, mut raw_event_log: Vec<u8>) -> Result<Self> {
-        let event_log: Vec<EventLog> = if !raw_event_log.is_empty() {
-            // Decompress if needed (handles both compressed and uncompressed formats)
-            raw_event_log = crate::cert::decompress_event_log(&raw_event_log)
-                .context("failed to decompress event log")?;
-            serde_json::from_slice(&raw_event_log).context("invalid event log")?
+        let report_data = [0u8; 64];
+        let tdx_quote = if mode.has_tdx() {
+            let quote = tdx_attest::get_quote(&report_data).context("Failed to get quote")?;
+            let event_log =
+                tdx_attest::eventlog::read_event_logs().context("Failed to read event logs")?;
+            Some(TdxQuote { quote, event_log })
         } else {
-            vec![]
+            None
+        };
+        let tpm_quote = if mode.has_tpm() {
+            let tpm_ctx = tpm_attest::TpmContext::detect().context("Failed to open TPM context")?;
+            let quote = tpm_ctx
+                .create_quote(&report_data, &tpm_attest::dstack_pcr_policy())
+                .context("Failed to create TPM quote")?;
+            Some(quote)
+        } else {
+            None
         };
         Ok(Self {
-            mode: AttestationMode::Tdx,  // Default to TDX for backward compatibility
-            quote,
-            raw_event_log,
-            event_log,
+            mode,
+            tdx_quote,
+            tpm_quote,
             report: (),
-            tpm_data: None,
         })
     }
+}
 
+impl Attestation {
     /// Extract attestation data from a certificate
     pub fn from_cert(cert: &impl CertExt) -> Result<Option<Self>> {
         Self::from_ext_getter(|oid| cert.get_extension_bytes(oid))
@@ -512,71 +435,63 @@ impl Attestation {
     ) -> Result<Option<Self>> {
         // Try to detect attestation mode from certificate extension
         let mode = if let Some(mode_bytes) = get_ext(oids::PHALA_RATLS_ATTESTATION_MODE)? {
-            let mode_str = std::str::from_utf8(&mode_bytes)
-                .context("Invalid attestation mode encoding")?;
-            AttestationMode::from_str(mode_str)?
+            std::str::from_utf8(&mode_bytes)
+                .context("Invalid attestation mode encoding")?
+                .parse()
+                .context("Invalid attestation mode")?
         } else {
-            // Backward compatibility: if no mode specified, check which quote type exists
-            let has_tdx = get_ext(oids::PHALA_RATLS_QUOTE)?.is_some();
-            let has_tpm = get_ext(oids::PHALA_RATLS_TPM_QUOTE)?.is_some();
-
-            match (has_tdx, has_tpm) {
-                (true, true) => AttestationMode::TdxTpm,
-                (true, false) => AttestationMode::Tdx,
-                (false, true) => AttestationMode::Tpm,
-                (false, false) => return Ok(None),
+            // Backward compatibility: if no mode specified
+            let has_tdx = get_ext(oids::PHALA_RATLS_TDX_QUOTE)?.is_some();
+            if !has_tdx {
+                bail!("Unknown attestation mode");
             }
+            AttestationMode::DstackTdx
+        };
+        let tdx_quote;
+        let tdx_event_log: Vec<EventLog>;
+
+        if mode.has_tdx() {
+            tdx_quote = match get_ext(oids::PHALA_RATLS_TDX_QUOTE)? {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            let mut raw_event_log =
+                get_ext(oids::PHALA_RATLS_EVENT_LOG)?.context("TDX event log missing")?;
+            tdx_event_log = if !raw_event_log.is_empty() {
+                // Decompress if needed (handles both compressed and uncompressed formats)
+                raw_event_log = crate::cert::decompress_event_log(&raw_event_log)
+                    .context("failed to decompress event log")?;
+                serde_json::from_slice(&raw_event_log).context("invalid event log")?
+            } else {
+                vec![]
+            };
+        } else {
+            tdx_quote = vec![];
+            tdx_event_log = vec![];
         };
 
-        match mode {
-            AttestationMode::Tdx => {
-                let quote = match get_ext(oids::PHALA_RATLS_QUOTE)? {
-                    Some(v) => v,
-                    None => return Ok(None),
-                };
-                let raw_event_log = get_ext(oids::PHALA_RATLS_EVENT_LOG)?.unwrap_or_default();
-                let mut attestation = Self::new(quote, raw_event_log)?;
-                attestation.mode = AttestationMode::Tdx;
-                Ok(Some(attestation))
-            }
-            AttestationMode::Tpm => {
-                let tpm_quote_json = match get_ext(oids::PHALA_RATLS_TPM_QUOTE)? {
-                    Some(v) => v,
-                    None => return Ok(None),
-                };
-                let tpm_data: TpmQuoteData = serde_json::from_slice(&tpm_quote_json)
-                    .context("Failed to parse TPM quote data")?;
+        let tpm_quote = if mode.has_tpm() {
+            let tpm_quote_json = match get_ext(oids::PHALA_RATLS_TPM_QUOTE)? {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            Some(
+                serde_json::from_slice(&tpm_quote_json)
+                    .context("Failed to parse TPM quote data")?,
+            )
+        } else {
+            None
+        };
 
-                Ok(Some(Self {
-                    mode: AttestationMode::Tpm,
-                    quote: tpm_data.message.clone(),
-                    raw_event_log: vec![],
-                    event_log: vec![],
-                    report: (),
-                    tpm_data: Some(tpm_data),
-                }))
-            }
-            AttestationMode::TdxTpm => {
-                // Both TDX and TPM quotes
-                let tdx_quote = match get_ext(oids::PHALA_RATLS_QUOTE)? {
-                    Some(v) => v,
-                    None => bail!("TDX quote missing in TdxTpm mode"),
-                };
-                let raw_event_log = get_ext(oids::PHALA_RATLS_EVENT_LOG)?.unwrap_or_default();
-
-                let tpm_quote_json = match get_ext(oids::PHALA_RATLS_TPM_QUOTE)? {
-                    Some(v) => v,
-                    None => bail!("TPM quote missing in TdxTpm mode"),
-                };
-                let tpm_data: TpmQuoteData = serde_json::from_slice(&tpm_quote_json)
-                    .context("Failed to parse TPM quote data")?;
-
-                let mut attestation = Self::new(tdx_quote, raw_event_log)?;
-                attestation.mode = AttestationMode::TdxTpm;
-                attestation.tpm_data = Some(tpm_data);
-                Ok(Some(attestation))
-            }
-        }
+        Ok(Some(Self {
+            mode,
+            tdx_quote: mode.has_tdx().then_some(TdxQuote {
+                quote: tdx_quote,
+                event_log: tdx_event_log,
+            }),
+            tpm_quote,
+            report: (),
+        }))
     }
 
     /// Extract attestation from x509 certificate
@@ -599,23 +514,54 @@ impl Attestation {
         ra_pubkey_der: &[u8],
         pccs_url: Option<&str>,
     ) -> Result<VerifiedAttestation> {
-        self.verify(
-            &QuoteContentType::RaTlsCert.to_report_data(ra_pubkey_der),
-            pccs_url,
-        )
-        .await
+        let expected_report_data = QuoteContentType::RaTlsCert.to_report_data(ra_pubkey_der);
+        self.verify(Some(expected_report_data), pccs_url).await
     }
 
     /// Verify the quote
     pub async fn verify(
         self,
-        report_data: &[u8; 64],
+        report_data: Option<[u8; 64]>,
         pccs_url: Option<&str>,
     ) -> Result<VerifiedAttestation> {
-        let quote = &self.quote;
-        if &self.decode_report_data()? != report_data {
-            bail!("report data mismatch");
+        let tpm_report = if self.mode.has_tpm() {
+            let report = self
+                .verify_tpm()
+                .await
+                .context("Failed to verify TPM quote")?;
+            Some(report)
+        } else {
+            None
+        };
+        let tdx_report = if self.mode.has_tdx() {
+            let report = self.verify_tdx(pccs_url).await?;
+            Some(report)
+        } else {
+            None
+        };
+        let report = DstackVerifiedReport {
+            tdx_report,
+            tpm_report,
+        };
+        if report.is_empty() {
+            bail!("nothing verified");
         }
+        report.ensure_report_data(report_data)?;
+        Ok(VerifiedAttestation {
+            mode: self.mode,
+            tdx_quote: self.tdx_quote,
+            tpm_quote: self.tpm_quote,
+            report,
+        })
+    }
+
+    async fn verify_tpm(&self) -> Result<TpmVerifiedReport> {
+        let tpm_quote = self.tpm_quote.as_ref().context("TPM quote missing")?;
+        tpm_qvl::get_collateral_and_verify(tpm_quote).await
+    }
+
+    async fn verify_tdx(&self, pccs_url: Option<&str>) -> Result<TdxVerifiedReport> {
+        let quote = &self.tdx_quote.as_ref().context("TDX quote missing")?.quote;
         let mut pccs_url = Cow::Borrowed(pccs_url.unwrap_or_default());
         if pccs_url.is_empty() {
             // try to read from PCCS_URL env var
@@ -624,38 +570,31 @@ impl Attestation {
                 Err(_) => Cow::Borrowed(""),
             };
         }
-        let report = qvl::collateral::get_collateral_and_verify(quote, Some(pccs_url.as_ref()))
-            .await
-            .context("Failed to get collateral")?;
-        if let Some(report) = report.report.as_td10() {
-            // Replay the event logs
-            let rtmr3 = self
-                .replay_rtmr3(None)
-                .context("Failed to replay event logs")?;
-            if rtmr3 != report.rt_mr3 {
-                bail!(
-                    "RTMR3 mismatch, quoted: {}, replayed: {}",
-                    hex::encode(report.rt_mr3),
-                    hex::encode(rtmr3),
-                );
-            }
+        let tdx_report =
+            dcap_qvl::collateral::get_collateral_and_verify(quote, Some(pccs_url.as_ref()))
+                .await
+                .context("Failed to get collateral")?;
+        let report = tdx_report.report.as_td10().context("TD10 report missing")?;
+        // Replay the event logs
+        let rtmr3 = self
+            .replay_rtmr3(None)
+            .context("Failed to replay event logs")?;
+        if rtmr3 != report.rt_mr3 {
+            bail!(
+                "RTMR3 mismatch, quoted: {}, replayed: {}",
+                hex::encode(report.rt_mr3),
+                hex::encode(rtmr3),
+            );
         }
-        validate_tcb(&report)?;
-        Ok(VerifiedAttestation {
-            mode: self.mode,
-            quote: self.quote,
-            raw_event_log: self.raw_event_log,
-            event_log: self.event_log,
-            report,
-            tpm_data: self.tpm_data,
-        })
+        validate_tcb(&tdx_report)?;
+        Ok(tdx_report)
     }
 }
 
-impl Attestation<VerifiedReport> {}
+impl Attestation<DstackVerifiedReport> {}
 
 /// Validate the TCB attributes
-pub fn validate_tcb(report: &VerifiedReport) -> Result<()> {
+pub fn validate_tcb(report: &TdxVerifiedReport) -> Result<()> {
     fn validate_td10(report: &TDReport10) -> Result<()> {
         let is_debug = report.td_attributes[0] & 0x01 != 0;
         if is_debug {

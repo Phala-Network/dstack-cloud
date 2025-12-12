@@ -214,6 +214,8 @@ pub fn create_quote_with_gcp_ak_algo(
     use tss_esapi::structures::{Data, PcrSelectionListBuilder, PcrSlot, SignatureScheme};
     use tss_esapi::traits::Marshall;
 
+    let platform = dstack_types::Platform::detect().context("Unsupported platform")?;
+
     debug!("generating TPM quote with GCP pre-provisioned AK...");
 
     // Load GCP pre-provisioned AK based on algorithm preference
@@ -346,8 +348,8 @@ pub fn create_quote_with_gcp_ak_algo(
         message,
         signature,
         pcr_values,
-        qualifying_data: qualifying_data.to_vec(),
         ak_cert,
+        platform,
     })
 }
 

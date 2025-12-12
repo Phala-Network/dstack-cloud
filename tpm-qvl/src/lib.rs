@@ -14,8 +14,8 @@
 //! This crate is designed to run on the verifier side, while tpm-attest runs on the device side.
 
 use anyhow::{bail, Result};
-use serde::{Deserialize, Serialize};
 use dstack_types::Platform;
+use serde::{Deserialize, Serialize};
 
 /// GCP TPM Root CA certificate (embedded, valid 2022-2122)
 ///
@@ -43,18 +43,18 @@ pub struct QuoteCollateral {
 }
 
 #[derive(Debug)]
-pub struct VerificationResult {
+pub struct VerificationError {
     pub status: VerificationStatus,
     pub error: anyhow::Error,
 }
 
-impl std::fmt::Display for VerificationResult {
+impl std::fmt::Display for VerificationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "verification failed: {}", self.error)
     }
 }
 
-impl std::error::Error for VerificationResult {
+impl std::error::Error for VerificationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.error.source()
     }
@@ -65,15 +65,14 @@ pub struct VerificationStatus {
     pub ak_verified: bool,
     pub signature_verified: bool,
     pub pcr_verified: bool,
-    pub qualifying_data_verified: bool,
 }
 
 #[cfg(feature = "crl-download")]
-pub use collateral::get_collateral;
+pub use collateral::{get_collateral, get_collateral_and_verify};
 
 pub use verify::verify_quote;
 
-mod verify;
+pub mod verify;
 
 #[cfg(feature = "crl-download")]
-mod collateral;
+pub mod collateral;
