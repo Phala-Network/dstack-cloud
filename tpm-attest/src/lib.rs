@@ -295,8 +295,8 @@ impl TpmContext {
     }
 
     pub fn read_event_log(&self, pcr_index: u32) -> Result<Vec<TpmEvent>> {
-        let event_log = TpmEventLog::from_kernel_file()
-            .context("Failed to read TPM Event Log from kernel")?;
+        let event_log =
+            TpmEventLog::from_kernel_file().context("Failed to read TPM Event Log from kernel")?;
 
         Ok(event_log.filter_by_pcr(pcr_index))
     }

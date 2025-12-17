@@ -39,6 +39,12 @@ pub struct TpmQuote {
     pub event_log: Vec<TpmEvent>,
 }
 
+impl TpmQuote {
+    pub fn from_scale(mut input: &[u8]) -> Result<Self, scale::Error> {
+        Self::decode(&mut input)
+    }
+}
+
 /// PCR (Platform Configuration Register) value
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct PcrValue {

@@ -12,7 +12,7 @@ use dstack_kms_rpc::{
     SignCertRequest, SignCertResponse,
 };
 use dstack_types::VmConfig;
-use dstack_verifier::CvmVerifier;
+use dstack_verifier::{CvmVerifier, VerificationDetails};
 use fs_err as fs;
 use hex_fmt::HexFmt;
 use k256::ecdsa::SigningKey;
@@ -146,52 +146,21 @@ impl RpcHandler {
         Ok(())
     }
 
-    async fn verify_os_image_hash(&self, vm_config: &VmConfig, report: &BootInfo) -> Result<()> {
+    async fn verify_os_image_hash(
+        &self,
+        vm_config: &VmConfig,
+        report: &VerifiedAttestation,
+    ) -> Result<()> {
         if !self.state.config.image.verify {
             info!("Image verification is disabled");
             return Ok(());
         }
-        let hex_os_image_hash = hex::encode(&vm_config.os_image_hash);
-        info!("Verifying image {hex_os_image_hash}");
-
-        // Compute expected measurements using verifier (with caching)
-        let expected_measurements = self
-            .state
+        let mut detail = VerificationDetails::default();
+        self.state
             .verifier
-            .compute_measurements_for_config(vm_config)
+            .verify_os_image_hash(vm_config, report, false, &mut detail)
             .await
-            .context("Failed to compute expected measurements")?;
-
-        // Compare with verified measurements from BootInfo
-        if expected_measurements.mrtd != report.mrtd {
-            bail!(
-                "MRTD mismatch: expected={}, actual={}",
-                HexFmt(&expected_measurements.mrtd),
-                HexFmt(&report.mrtd)
-            );
-        }
-        if expected_measurements.rtmr0 != report.rtmr0 {
-            bail!(
-                "RTMR0 mismatch: expected={}, actual={}",
-                HexFmt(&expected_measurements.rtmr0),
-                HexFmt(&report.rtmr0)
-            );
-        }
-        if expected_measurements.rtmr1 != report.rtmr1 {
-            bail!(
-                "RTMR1 mismatch: expected={}, actual={}",
-                HexFmt(&expected_measurements.rtmr1),
-                HexFmt(&report.rtmr1)
-            );
-        }
-        if expected_measurements.rtmr2 != report.rtmr2 {
-            bail!(
-                "RTMR2 mismatch: expected={}, actual={}",
-                HexFmt(&expected_measurements.rtmr2),
-                HexFmt(&report.rtmr2)
-            );
-        }
-
+            .context("Failed to verify os image hash")?;
         Ok(())
     }
 
@@ -240,7 +209,7 @@ impl RpcHandler {
         if !response.is_allowed {
             bail!("Boot denied: {}", response.reason);
         }
-        self.verify_os_image_hash(&vm_config, &boot_info)
+        self.verify_os_image_hash(&vm_config, att)
             .await
             .context("Failed to verify os image hash")?;
         Ok(BootConfig {

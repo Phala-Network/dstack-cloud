@@ -2,13 +2,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use ra_tls::attestation::AppInfo;
+use ra_tls::attestation::{AppInfo, AttestationMode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationRequest {
-    pub quote: String,
-    pub event_log: String,
+    pub quote: Option<String>,
+    pub event_log: Option<String>,
+    #[serde(default)]
+    pub attestation_mode: AttestationMode,
+    pub tpm_quote: Option<String>,
     pub vm_config: String,
     pub pccs_url: Option<String>,
     pub debug: Option<bool>,
@@ -21,7 +24,7 @@ pub struct VerificationResponse {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct VerificationDetails {
     pub quote_verified: bool,
     pub event_log_verified: bool,

@@ -132,9 +132,7 @@ impl TpmEventLog {
 }
 
 /// Parse Spec ID Event in legacy TCG_PCClientPCREvent format
-fn parse_spec_id_event<I: scale::Input>(
-    input: &mut I,
-) -> Result<(TpmRawEvent, TcgEfiSpecIdEvent)> {
+fn parse_spec_id_event<I: scale::Input>(input: &mut I) -> Result<(TpmRawEvent, TcgEfiSpecIdEvent)> {
     #[derive(Decode)]
     struct SpecIdHeader {
         pcr_index: u32,

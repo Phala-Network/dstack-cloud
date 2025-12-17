@@ -27,10 +27,11 @@ use serde_human_bytes as hex_bytes;
 pub use tpm_types::TpmQuote;
 
 /// Attestation mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 pub enum AttestationMode {
     /// Intel TDX with DCAP quote only
     #[serde(rename = "dstack-tdx")]
+    #[default]
     DstackTdx,
     /// GCP TDX with DCAP quote only
     #[serde(rename = "gcp-tdx")]
@@ -202,7 +203,7 @@ impl DstackVerifiedReport {
     }
 
     /// Ensure report data matches
-    pub fn ensure_report_data(&self, report_data: Option<[u8; 64]>) -> Result<()> {
+    pub fn ensure_report_data(&self, report_data: Option<[u8; 64]>) -> Result<[u8; 64]> {
         let expected = match (&self.tdx_report, report_data) {
             (Some(tdx_report), Some(rd)) => {
                 let td_report_data = get_report_data(tdx_report);
@@ -213,7 +214,7 @@ impl DstackVerifiedReport {
             }
             (Some(tdx_report), None) => get_report_data(tdx_report),
             (None, Some(rd)) => rd,
-            (None, None) => return Ok(()),
+            (None, None) => bail!("no verified report"),
         };
 
         if let Some(tpm_report) = &self.tpm_report {
@@ -221,7 +222,7 @@ impl DstackVerifiedReport {
                 bail!("report data mismatch");
             }
         }
-        Ok(())
+        Ok(expected)
     }
 }
 
