@@ -4,7 +4,7 @@
 
 use crate::codecs::VecOf;
 use anyhow::{Context, Result};
-use scale::Decode;
+use scale::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use tcg::{TcgDigest, TcgEfiSpecIdEvent};
@@ -45,7 +45,7 @@ pub struct TcgEventLog {
 /// which is one-based.
 ///
 /// As for RTMR3, the digest extended is calculated as `sha384(event_type.to_ne_bytes() || b":" || event || b":" || event_payload)`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct TdxEventLogEntry {
     /// IMR index, starts from 0
     pub imr: u32,

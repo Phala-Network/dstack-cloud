@@ -72,7 +72,8 @@ impl Image {
         let hda = info.hda.as_ref().map(|hda| base_path.join(hda));
         let rootfs = info.rootfs.as_ref().map(|rootfs| base_path.join(rootfs));
         let bios = info.bios.as_ref().map(|bios| base_path.join(bios));
-        let digest = fs::read_to_string(base_path.join("digest.txt"))
+        let digest = fs::read_to_string(base_path.join("dstack-uki.efi.auth_hash.txt"))
+            .or_else(|_| fs::read_to_string(base_path.join("digest.txt")))
             .ok()
             .map(|s| s.trim().to_string());
         if info.version.is_empty() {

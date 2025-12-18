@@ -10,10 +10,11 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use cc_eventlog::TdxEventLogEntry as EventLog;
-use dcap_qvl::verify::VerifiedReport as TdxVerifiedReport;
 use dstack_mr::{RtmrLog, TdxMeasurementDetails, TdxMeasurements};
 use dstack_types::VmConfig;
-use ra_tls::attestation::{Attestation, AttestationMode, TdxQuote, TpmQuote, VerifiedAttestation};
+use ra_tls::attestation::{
+    Attestation, AttestationMode, TdxQuote, TpmQuote, VerifiedAttestation, VersionedAttestation,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::{io::AsyncWriteExt, process::Command};
@@ -380,38 +381,28 @@ impl CvmVerifier {
     }
 
     pub async fn verify(&self, request: &VerificationRequest) -> Result<VerificationResponse> {
-        let quote = request.quote.as_ref().context("Quote is required")?;
-        let event_log = request
-            .event_log
-            .as_ref()
-            .context("Event log is required")?;
-        let quote = hex::decode(quote).context("Failed to decode quote hex")?;
-        let event_log = serde_json::from_str(event_log).context("Failed to decode event log")?;
-        let attestation = match request.attestation_mode {
-            AttestationMode::DstackTdx => Attestation {
-                mode: request.attestation_mode,
-                tdx_quote: Some(TdxQuote { quote, event_log }),
+        let attestation = if let Some(attestation) = &request.attestation {
+            VersionedAttestation::from_scale(attestation).context("Failed to decode attestaion")?
+        } else if let Some(tpm_quote) = &request.quote {
+            let event_log = request
+                .event_log
+                .as_ref()
+                .context("Event log is required")?;
+            let event_log =
+                serde_json::from_str(event_log).context("Failed to decode event log")?;
+            Attestation {
+                mode: AttestationMode::DstackTdx,
+                tdx_quote: Some(TdxQuote {
+                    quote: tpm_quote.to_vec(),
+                    event_log,
+                }),
                 tpm_quote: None,
+                config: "".into(),
                 report: (),
-            },
-            AttestationMode::GcpTdx => {
-                let tpm_quote = request
-                    .tpm_quote
-                    .as_ref()
-                    .context("TPM quote is required for GCP TDX")?;
-                let tpm_quote = hex::decode(tpm_quote).context("Failed to decode TPM quote hex")?;
-                let tpm_quote = TpmQuote::from_scale(&mut tpm_quote.as_ref())
-                    .context("Failed to decode TPM quote")?;
-                Attestation {
-                    mode: request.attestation_mode,
-                    tdx_quote: Some(TdxQuote { quote, event_log }),
-                    tpm_quote: Some(tpm_quote),
-                    report: (),
-                }
             }
-            AttestationMode::DstackNitro => {
-                bail!("Nitro not supported")
-            }
+            .into_versioned()
+        } else {
+            bail!("Quote is required");
         };
         let mut details = VerificationDetails {
             quote_verified: false,
@@ -425,8 +416,7 @@ impl CvmVerifier {
             rtmr_debug: None,
         };
 
-        let vm_config: VmConfig =
-            serde_json::from_str(&request.vm_config).context("Failed to decode VM config JSON")?;
+        let attestation = attestation.into_inner();
         let debug = request.debug.unwrap_or(false);
         let verified = attestation.verify(None, request.pccs_url.as_deref()).await;
         let verified_attestation = match verified {
@@ -450,21 +440,29 @@ impl CvmVerifier {
                 return Ok(VerificationResponse {
                     is_valid: false,
                     details,
-                    reason: Some(format!("Quote verification failed: {e}")),
+                    reason: Some(format!("Quote verification failed: {e:#}")),
                 });
             }
         };
         // Step 3: Verify os-image-hash matches using dstack-mr
-        if let Err(e) = self
-            .verify_os_image_hash(&vm_config, &verified_attestation, debug, &mut details)
-            .await
-        {
-            return Ok(VerificationResponse {
-                is_valid: false,
-                details,
-                reason: Some(format!("OS image hash verification failed: {e:#}")),
-            });
-        }
+        let verified = self
+            .verify_os_image_hash(
+                request.vm_config.clone().unwrap_or_default(),
+                &verified_attestation,
+                debug,
+                &mut details,
+            )
+            .await;
+        let vm_config = match verified {
+            Ok(vm_config) => vm_config,
+            Err(e) => {
+                return Ok(VerificationResponse {
+                    is_valid: false,
+                    details,
+                    reason: Some(format!("OS image hash verification failed: {e:#}")),
+                });
+            }
+        };
         details.os_image_hash_verified = true;
         match verified_attestation.decode_app_info(false) {
             Ok(mut info) => {
@@ -490,25 +488,31 @@ impl CvmVerifier {
 
     pub async fn verify_os_image_hash(
         &self,
-        vm_config: &VmConfig,
+        mut vm_config: String,
         attestation: &VerifiedAttestation,
         debug: bool,
         details: &mut VerificationDetails,
-    ) -> Result<()> {
+    ) -> Result<VmConfig> {
+        if vm_config.is_empty() {
+            vm_config = attestation.config.clone()
+        }
+        let vm_config: VmConfig =
+            serde_json::from_str(&vm_config).context("Failed to decode VM config JSON")?;
         match attestation.mode {
             AttestationMode::GcpTdx => {
                 let Some(tpm_quote) = &attestation.tpm_quote else {
                     bail!("No TPM quote");
                 };
-                self.verify_os_image_hash_for_gcp_tdx(vm_config, tpm_quote)
-                    .await
+                self.verify_os_image_hash_for_gcp_tdx(&vm_config, tpm_quote)
+                    .await?;
             }
             AttestationMode::DstackTdx => {
-                self.verify_os_image_hash_for_dstack_tdx(vm_config, attestation, debug, details)
-                    .await
+                self.verify_os_image_hash_for_dstack_tdx(&vm_config, attestation, debug, details)
+                    .await?;
             }
             AttestationMode::DstackNitro => bail!("Nitro not supported"),
         }
+        Ok(vm_config)
     }
 
     async fn verify_os_image_hash_for_dstack_tdx(

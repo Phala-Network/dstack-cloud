@@ -65,8 +65,8 @@ product_name = "dstack"
 # product_sku = ""
 
 ## type=2 (Baseboard Information)
-board_vendor = "dstack"
-board_name = "dstack"
+# board_vendor = "dstack"
+# board_name = "dstack"
 # board_version = ""
 # board_serial = ""
 # board_asset_tag = ""

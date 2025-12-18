@@ -444,16 +444,6 @@ fn calculate_pcr2_from_uki(uki_data: &[u8]) -> Result<Vec<u8>> {
 
 ## 配置示例
 
-### Guest 环境变量
-
-```bash
-# Auto-detect (recommended)
-# Will use TdxVtpm mode on GCP TDX
-
-# Or explicit:
-export DSTACK_ATTESTATION_MODE="tdx+vtpm"
-```
-
 ### Verifier 策略
 
 ```yaml

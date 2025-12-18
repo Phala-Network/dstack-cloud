@@ -6,6 +6,7 @@
 use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
+use sha2::Digest as _;
 use tracing::debug;
 use tss_esapi::{
     handles::{KeyHandle, NvIndexTpmHandle, TpmHandle},
@@ -182,7 +183,7 @@ impl FromStr for KeyAlgorithm {
 /// - `Err(_)` - Failed to generate quote
 pub fn create_quote_with_gcp_ak(
     tcti_path: Option<&str>,
-    qualifying_data: &[u8],
+    qualifying_data: &[u8; 32],
     pcr_selection: &crate::PcrSelection,
 ) -> Result<crate::TpmQuote> {
     create_quote_with_gcp_ak_algo(
@@ -208,7 +209,7 @@ pub fn create_quote_with_gcp_ak(
 /// - `Err(_)` - Failed to generate quote
 pub fn create_quote_with_gcp_ak_algo(
     tcti_path: Option<&str>,
-    qualifying_data: &[u8],
+    qualifying_data: &[u8; 32],
     pcr_selection: &crate::PcrSelection,
     key_algo: KeyAlgorithm,
 ) -> Result<crate::TpmQuote> {
@@ -254,7 +255,7 @@ pub fn create_quote_with_gcp_ak_algo(
     };
 
     // Build PCR selection list for tss-esapi
-    let mut pcr_selection_list = PcrSelectionListBuilder::new();
+    let pcr_selection_list = PcrSelectionListBuilder::new();
 
     // Convert hash algorithm string to HashingAlgorithm enum
     let hash_alg = match pcr_selection.bank.as_str() {
@@ -267,20 +268,22 @@ pub fn create_quote_with_gcp_ak_algo(
         ),
     };
 
-    // Add each PCR to the selection
+    // Build all PCR slots at once
     // PcrSlot uses bit mask representation: PCR 0 = bit 0 (0x1), PCR 1 = bit 1 (0x2), etc.
+    let mut pcr_slots = Vec::new();
     for pcr_idx in &pcr_selection.pcrs {
         let bit_mask = 1u32 << pcr_idx;
         let pcr_slot =
             PcrSlot::try_from(bit_mask).with_context(|| format!("invalid PCR index: {pcr_idx}"))?;
-        pcr_selection_list = pcr_selection_list.with_selection(hash_alg, &[pcr_slot]);
+        pcr_slots.push(pcr_slot);
     }
 
     let pcr_selection_list = pcr_selection_list
+        .with_selection(hash_alg, &pcr_slots)
         .build()
         .context("failed to build PCR selection list")?;
 
-    // Create qualifying data structure
+    // Create qualifying data structure.
     let qual_data =
         Data::try_from(qualifying_data.to_vec()).context("failed to create qualifying data")?;
 

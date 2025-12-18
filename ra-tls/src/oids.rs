@@ -12,9 +12,5 @@ pub const PHALA_RATLS_EVENT_LOG: &[u64] = &[1, 3, 6, 1, 4, 1, 62397, 1, 2];
 pub const PHALA_RATLS_APP_ID: &[u64] = &[1, 3, 6, 1, 4, 1, 62397, 1, 3];
 /// OID for Special Certificate Usage.
 pub const PHALA_RATLS_CERT_USAGE: &[u64] = &[1, 3, 6, 1, 4, 1, 62397, 1, 4];
-/// OID for attestation mode (vTPM or TDX).
-pub const PHALA_RATLS_ATTESTATION_MODE: &[u64] = &[1, 3, 6, 1, 4, 1, 62397, 1, 5];
-/// OID for TPM Quote (vTPM mode).
-pub const PHALA_RATLS_TPM_QUOTE: &[u64] = &[1, 3, 6, 1, 4, 1, 62397, 1, 6];
-/// OID for TPM Event Log (vTPM mode, optional).
-pub const PHALA_RATLS_TPM_EVENT_LOG: &[u64] = &[1, 3, 6, 1, 4, 1, 62397, 1, 7];
+/// OID for dstack attestation (the successor of TDX quote)
+pub const PHALA_RATLS_ATTESTATION: &[u64] = &[1, 3, 6, 1, 4, 1, 62397, 1, 5];

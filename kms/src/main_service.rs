@@ -14,7 +14,6 @@ use dstack_kms_rpc::{
 use dstack_types::VmConfig;
 use dstack_verifier::{CvmVerifier, VerificationDetails};
 use fs_err as fs;
-use hex_fmt::HexFmt;
 use k256::ecdsa::SigningKey;
 use ra_rpc::{CallContext, RpcCall};
 use ra_tls::{
@@ -148,7 +147,7 @@ impl RpcHandler {
 
     async fn verify_os_image_hash(
         &self,
-        vm_config: &VmConfig,
+        vm_config: String,
         report: &VerifiedAttestation,
     ) -> Result<()> {
         if !self.state.config.image.verify {
@@ -169,7 +168,7 @@ impl RpcHandler {
         att: &VerifiedAttestation,
         is_kms: bool,
         use_boottime_mr: bool,
-        vm_config: &str,
+        vm_config_str: &str,
     ) -> Result<BootConfig> {
         let Some(tdx_report) = &att.report.tdx_report else {
             bail!("No TD report in attestation");
@@ -179,9 +178,9 @@ impl RpcHandler {
             .as_td10()
             .context("Failed to decode TD report")?;
         let app_info = att.decode_app_info(use_boottime_mr)?;
-        debug!("vm_config: {vm_config}");
+        debug!("vm_config: {vm_config_str}");
         let vm_config: VmConfig =
-            serde_json::from_str(vm_config).context("Failed to decode VM config")?;
+            serde_json::from_str(vm_config_str).context("Failed to decode VM config")?;
         let os_image_hash = vm_config.os_image_hash.clone();
         let boot_info = BootInfo {
             mrtd: report.mr_td.to_vec(),
@@ -209,7 +208,7 @@ impl RpcHandler {
         if !response.is_allowed {
             bail!("Boot denied: {}", response.reason);
         }
-        self.verify_os_image_hash(&vm_config, att)
+        self.verify_os_image_hash(vm_config_str.into(), att)
             .await
             .context("Failed to verify os image hash")?;
         Ok(BootConfig {
@@ -355,16 +354,13 @@ impl KmsRpc for RpcHandler {
     }
 
     async fn sign_cert(self, request: SignCertRequest) -> Result<SignCertResponse> {
-        if request.api_version > 1 {
-            bail!("Unsupported API version: {}", request.api_version);
-        }
         let csr = match request.api_version {
             1 => {
                 let csr = CertSigningRequestV1::decode(&mut &request.csr[..])
                     .context("Failed to parse csr")?;
                 csr.verify(&request.signature)
                     .context("Failed to verify csr signature")?;
-                csr.into()
+                csr.try_into().context("Failed to upgrade csr v1 to v2")?
             }
             2 => {
                 let csr = CertSigningRequestV2::decode(&mut &request.csr[..])
@@ -375,9 +371,10 @@ impl KmsRpc for RpcHandler {
             }
             _ => bail!("Unsupported API version: {}", request.api_version),
         };
-        let attestation = csr.to_attestation();
-        let attestation = attestation
-            .context("Failed to create attestation from quote and event log")?
+        let attestation = csr
+            .attestation
+            .clone()
+            .into_inner()
             .verify_with_ra_pubkey(&csr.pubkey, self.state.config.pccs_url.as_deref())
             .await
             .context("Quote verification failed")?;

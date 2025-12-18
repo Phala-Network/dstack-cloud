@@ -7,11 +7,10 @@ use dstack_kms_rpc::{kms_client::KmsClient, SignCertRequest};
 use dstack_types::{AppKeys, KeyProvider};
 use ra_rpc::client::{RaClient, RaClientConfig};
 use ra_tls::{
-    attestation::{AttestationMode, QuoteContentType},
-    cert::{compress_event_log, generate_ra_cert, CaCert, CertConfig, CertSigningRequestV2, Csr},
+    attestation::QuoteContentType,
+    cert::{generate_ra_cert, CaCert, CertConfig, CertSigningRequestV2, Csr},
     rcgen::KeyPair,
 };
-use tdx_attest::{eventlog::read_runtime_event_logs, get_quote};
 
 pub enum CertRequestClient {
     Local {
@@ -39,7 +38,7 @@ impl CertRequestClient {
             CertRequestClient::Kms { client, vm_config } => {
                 let response = client
                     .sign_cert(SignCertRequest {
-                        api_version: 1,
+                        api_version: 2,
                         csr: csr.to_vec(),
                         signature: signature.to_vec(),
                         vm_config: vm_config.clone(),
@@ -102,41 +101,15 @@ impl CertRequestClient {
     ) -> Result<Vec<String>> {
         let pubkey = key.public_key_der();
         let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
-        let (tdx_quote, tdx_event_log) = if !no_ra {
-            let quote = get_quote(&report_data).context("Failed to get quote")?;
-            let event_logs = read_runtime_event_logs().context("Failed to decode event log")?;
-            let event_log =
-                serde_json::to_vec(&event_logs).context("Failed to serialize RTMR3 events")?;
-            // Compress to reduce certificate size
-            let event_log =
-                compress_event_log(&event_log).context("Failed to compress RTMR3 events")?;
-            (quote, event_log)
-        } else {
-            (vec![], vec![])
-        };
-
-        let attestation_mode =
-            AttestationMode::detect().context("Failed to detect attestation mode")?;
-
-        let tpm_quote = if attestation_mode.has_tpm() {
-            let tpm = tpm_attest::TpmContext::detect().context("Failed to detect TPM")?;
-            let pcr_selection = tpm_attest::dstack_pcr_policy();
-            let quote = tpm
-                .create_quote(&report_data, &pcr_selection)
-                .context("Failed to create TPM quote")?;
-            Some(quote)
-        } else {
-            None
-        };
+        let attestation = ra_rpc::Attestation::quote(&report_data)
+            .context("Failed to get quote for cert pubkey")?
+            .into_versioned();
 
         let csr = CertSigningRequestV2 {
             confirm: "please sign cert:".to_string(),
             pubkey,
             config,
-            tdx_quote,
-            tdx_event_log,
-            attestation_mode,
-            tpm_quote,
+            attestation,
         };
         let signature = csr.signed_by(key).context("Failed to sign the CSR")?;
         self.sign_csr(&csr, &signature)

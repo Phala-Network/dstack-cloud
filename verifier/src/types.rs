@@ -2,17 +2,19 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use ra_tls::attestation::{AppInfo, AttestationMode};
+use ra_tls::attestation::AppInfo;
 use serde::{Deserialize, Serialize};
+
+use serde_human_bytes as serde_bytes;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationRequest {
-    pub quote: Option<String>,
+    #[serde(with = "serde_bytes")]
+    pub quote: Option<Vec<u8>>,
     pub event_log: Option<String>,
-    #[serde(default)]
-    pub attestation_mode: AttestationMode,
-    pub tpm_quote: Option<String>,
-    pub vm_config: String,
+    pub vm_config: Option<String>,
+    #[serde(with = "serde_bytes")]
+    pub attestation: Option<Vec<u8>>,
     pub pccs_url: Option<String>,
     pub debug: Option<bool>,
 }

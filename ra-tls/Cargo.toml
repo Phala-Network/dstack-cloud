@@ -40,6 +40,8 @@ tpm-attest = { workspace = true, optional = true }
 tpm-types.workspace = true
 dstack-types.workspace = true
 tpm-qvl.workspace = true
+hex_fmt.workspace = true
+ez-hash.workspace = true
 
 [features]
 default = ["quote"]

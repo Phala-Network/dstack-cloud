@@ -103,6 +103,21 @@ if ! [[ -e /dev/tdx_guest ]]; then
 	modprobe tdx-guest
 fi
 
+# Mount configfs for TSM (required for TDX quote generation)
+if [[ ! -d /sys/kernel/config ]]; then
+	mkdir -p /sys/kernel/config
+fi
+if ! mountpoint -q /sys/kernel/config; then
+	log "Mounting configfs for TSM..."
+	mount -t configfs none /sys/kernel/config
+fi
+
+# Create TSM report directory for TDX attestation
+if [[ -e /dev/tdx_guest ]] && [[ ! -d /sys/kernel/config/tsm/report/com.intel.dcap ]]; then
+	log "Creating TSM report directory..."
+	mkdir -p /sys/kernel/config/tsm/report/com.intel.dcap
+fi
+
 # Setup dstack system
 log "Preparing dstack system..."
 
@@ -240,6 +255,44 @@ if [ -f "/sys/class/block/${device_name}/partition" ]; then
 		# Trigger kernel to re-read partition table
 		blockdev --rereadpt "$parent_disk" 2>/dev/null || true
 	fi
+fi
+
+log "Network diagnostics (pre-setup)"
+if command -v ip >/dev/null 2>&1; then
+	log "ip -br link"
+	ip -br link || true
+	log "ip -br addr"
+	ip -br addr || true
+	log "ip route"
+	ip route || true
+	log "ip -6 route"
+	ip -6 route || true
+	log "ip -4 route get 1.1.1.1"
+	ip -4 route get 1.1.1.1 2>/dev/null || true
+fi
+log "resolv.conf"
+cat /etc/resolv.conf 2>/dev/null || true
+if command -v resolvectl >/dev/null 2>&1; then
+	log "resolvectl status"
+	resolvectl status 2>/dev/null || true
+fi
+KMS_HOST="kms.tdxlab.dstack.org"
+log "DNS lookup: ${KMS_HOST}"
+if command -v getent >/dev/null 2>&1; then
+	getent ahosts "$KMS_HOST" 2>/dev/null || true
+elif command -v nslookup >/dev/null 2>&1; then
+	nslookup "$KMS_HOST" 2>/dev/null || true
+fi
+if command -v ping >/dev/null 2>&1; then
+	log "ping -c1 8.8.8.8"
+	ping -c 1 -W 2 8.8.8.8 2>/dev/null || true
+fi
+if command -v curl >/dev/null 2>&1; then
+	log "curl: https://${KMS_HOST}:12001"
+	curl -fsS -I --max-time 5 "https://${KMS_HOST}:12001" 2>/dev/null || true
+elif command -v wget >/dev/null 2>&1; then
+	log "wget: https://${KMS_HOST}:12001"
+	wget -S --spider -T 5 "https://${KMS_HOST}:12001" 2>&1 | head -n 20 || true
 fi
 
 dstack-util setup --work-dir $WORK_DIR --device "$DATA_DEVICE" --mount-point $DATA_MNT

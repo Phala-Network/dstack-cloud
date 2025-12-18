@@ -9,6 +9,7 @@ use fs_err as fs;
 use getrandom::fill as getrandom;
 use host_api::HostApi;
 use k256::schnorr::SigningKey;
+use ra_rpc::Attestation;
 use ra_tls::{
     attestation::QuoteContentType,
     cert::generate_ra_cert,
@@ -76,6 +77,7 @@ enum Commands {
     TpmQuote(TpmQuoteArgs),
     /// Verify a TPM quote
     TpmVerify(TpmVerifyArgs),
+    QuoteReport(QuoteReportArgs),
 }
 
 #[derive(Parser)]
@@ -232,7 +234,7 @@ struct VtpmAttestArgs {
 #[derive(Parser)]
 /// Generate a TPM quote
 struct TpmQuoteArgs {
-    /// qualifying data (hex encoded, default: 64 zeros)
+    /// qualifying data (hex encoded, default: 32 zeros)
     #[arg(short, long)]
     data: Option<String>,
 
@@ -243,6 +245,10 @@ struct TpmQuoteArgs {
     /// key algorithm (auto, ecc, or rsa; default: auto)
     #[arg(short = 'k', long, default_value = "auto")]
     key_algo: String,
+
+    /// The hash algorithm to use (default: none)
+    #[arg(short = 'H', long, default_value = "none")]
+    hash_algo: String,
 }
 
 #[derive(Parser)]
@@ -255,6 +261,57 @@ struct TpmVerifyArgs {
     /// path to TPM quote JSON file
     #[arg(short, long)]
     quote: PathBuf,
+}
+
+#[derive(Parser)]
+struct QuoteReportArgs {
+    #[arg(long)]
+    report_data: Option<String>,
+
+    #[arg(long, default_value = "/dstack/.host-shared/.sys-config.json")]
+    sys_config: PathBuf,
+
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    #[arg(long, default_value_t = false)]
+    debug: bool,
+}
+
+fn cmd_quote_report(args: QuoteReportArgs) -> Result<()> {
+    #[derive(serde::Serialize)]
+    struct VerificationRequestJson {
+        pub attestation: String,
+    }
+
+    fn pad64(data: &[u8]) -> Result<[u8; 64]> {
+        if data.len() > 64 {
+            anyhow::bail!("report_data must be at most 64 bytes");
+        }
+        let mut out = [0u8; 64];
+        out[..data.len()].copy_from_slice(data);
+        Ok(out)
+    }
+
+    let report_data = match args.report_data {
+        Some(hex_data) => {
+            pad64(&hex::decode(hex_data).context("Failed to decode report_data hex")?)?
+        }
+        None => [0u8; 64],
+    };
+    let attestation = Attestation::quote(&report_data).context("Failed to get attestation")?;
+    let request = VerificationRequestJson {
+        attestation: hex::encode(attestation.into_versioned().to_scale()),
+    };
+
+    let json =
+        serde_json::to_string_pretty(&request).context("Failed to serialize request JSON")?;
+    if let Some(output_path) = args.output {
+        fs::write(&output_path, json).context("Failed to write quote report")?;
+    } else {
+        println!("{json}");
+    }
+    Ok(())
 }
 
 fn cmd_quote() -> Result<()> {
@@ -428,14 +485,13 @@ fn cmd_gen_ca_cert(args: GenCaCertArgs) -> Result<()> {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
     let pubkey = key.public_key_der();
     let report_data = QuoteContentType::KmsRootCa.to_report_data(&pubkey);
-    let quote = att::get_quote(&report_data).context("Failed to get quote")?;
-    let event_logs = att::eventlog::read_event_logs().context("Failed to read event logs")?;
-    let event_log = serde_json::to_vec(&event_logs).context("Failed to serialize event logs")?;
+    let attestation = Attestation::quote(&report_data)
+        .context("Failed to get attestation")?
+        .into_versioned();
 
     let req = CertRequest::builder()
         .subject("App Root CA")
-        .tdx_quote(&quote)
-        .tdx_event_log(&event_log)
+        .attestation(&attestation)
         .key(&key)
         .ca_level(args.ca_level)
         .build();
@@ -501,13 +557,12 @@ fn make_app_keys(
     use ra_tls::cert::CertRequest;
     let pubkey = app_key.public_key_der();
     let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
-    let quote = att::get_quote(&report_data).context("Failed to get quote")?;
-    let event_logs = att::eventlog::read_event_logs().context("Failed to read event logs")?;
-    let event_log = serde_json::to_vec(&event_logs).context("Failed to serialize event logs")?;
+    let attestation = Attestation::quote(&report_data)
+        .context("Failed to get attestation")?
+        .into_versioned();
     let req = CertRequest::builder()
         .subject("App Root Cert")
-        .tdx_quote(&quote)
-        .tdx_event_log(&event_log)
+        .attestation(&attestation)
         .key(app_key)
         .ca_level(ca_level)
         .build();
@@ -755,10 +810,10 @@ fn cmd_vtpm_attest(args: VtpmAttestArgs) -> Result<()> {
 }
 
 fn cmd_tpm_quote(args: TpmQuoteArgs) -> Result<()> {
-    let qualifying_data = if let Some(hex_data) = args.data {
+    let data = if let Some(hex_data) = args.data {
         let decoded = hex::decode(&hex_data).context("Failed to decode hex data")?;
-        if decoded.len() > 32 {
-            anyhow::bail!("Qualifying data must be at most 32 bytes");
+        if decoded.len() > 64 {
+            anyhow::bail!("Qualifying data must be at most 64 bytes");
         }
         decoded
     } else {
@@ -770,6 +825,17 @@ fn cmd_tpm_quote(args: TpmQuoteArgs) -> Result<()> {
         .key_algo
         .parse::<tpm_attest::KeyAlgorithm>()
         .context("Failed to parse key algorithm")?;
+
+    let qualifying_data: [u8; 32] = match args.hash_algo.as_str() {
+        "none" => data
+            .try_into()
+            .ok()
+            .context("qualifying data must be 32 bytes")?,
+        "sha256" => ez_hash::sha256(&data),
+        _ => {
+            anyhow::bail!("Unsupported hash algorithm");
+        }
+    };
 
     let tpm = tpm_attest::TpmContext::open(None).context("Failed to open TPM context")?;
     let pcr_selection = tpm_attest::dstack_pcr_policy();
@@ -934,6 +1000,9 @@ async fn main() -> Result<()> {
         }
         Commands::TpmVerify(args) => {
             cmd_tpm_verify(args).await?;
+        }
+        Commands::QuoteReport(args) => {
+            cmd_quote_report(args)?;
         }
     }
 

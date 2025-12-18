@@ -43,6 +43,10 @@ service DstackGuest {
   // Generates a TDX quote with given report data.
   rpc GetQuote(RawQuoteArgs) returns (GetQuoteResponse) {}
 
+  // Generates a versioned attestation with the given report data.
+  // Returns a dstack-defined attestation format that supports different attestation modes across platforms.
+  rpc GetAttestation(RawQuoteArgs) returns (GetAttestationResponse) {}
+
   // Emit an event. This extends the event to RTMR3 on TDX platform.
   rpc EmitEvent(EmitEventArgs) returns (google.protobuf.Empty) {}
 
@@ -154,8 +158,6 @@ message TdxQuoteArgs {
 message RawQuoteArgs {
   // 64 bytes of report data
   bytes report_data = 1;
-  // Quote type: "tdx" (default) or "tpm"
-  string quote_type = 2;
 }
 
 message TdxQuoteResponse {
@@ -169,6 +171,11 @@ message TdxQuoteResponse {
   string hash_algorithm = 3;
   // Prefix added to the report data before hashing
   string prefix = 4;
+}
+
+message GetAttestationResponse {
+  // The attestation
+  bytes attestation = 1;
 }
 
 message GetQuoteResponse {

@@ -54,6 +54,7 @@ libc.workspace = true
 luks2.workspace = true
 scopeguard.workspace = true
 tempfile.workspace = true
+ez-hash.workspace = true
 
 [dev-dependencies]
 rand.workspace = true

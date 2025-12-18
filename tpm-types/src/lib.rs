@@ -43,6 +43,10 @@ impl TpmQuote {
     pub fn from_scale(mut input: &[u8]) -> Result<Self, scale::Error> {
         Self::decode(&mut input)
     }
+
+    pub fn to_scale(&self) -> Vec<u8> {
+        self.encode()
+    }
 }
 
 /// PCR (Platform Configuration Register) value

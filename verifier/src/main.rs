@@ -180,14 +180,10 @@ async fn main() -> Result<()> {
 
     // Check for oneshot mode
     if let Some(file_path) = cli.verify {
-        // Run oneshot verification and exit
-        let rt = tokio::runtime::Runtime::new().context("Failed to create runtime")?;
-        rt.block_on(async {
-            if let Err(e) = run_oneshot(&file_path, &config).await {
-                error!("Oneshot verification failed: {:#}", e);
-                std::process::exit(1);
-            }
-        });
+        if let Err(e) = run_oneshot(&file_path, &config).await {
+            error!("Oneshot verification failed: {:#}", e);
+            std::process::exit(1);
+        }
         std::process::exit(0);
     }
 

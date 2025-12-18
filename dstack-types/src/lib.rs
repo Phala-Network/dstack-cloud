@@ -275,7 +275,7 @@ pub enum Platform {
 impl Platform {
     /// Detect platform from system DMI information
     pub fn detect() -> Option<Self> {
-        if let Ok(board_name) = std::fs::read_to_string("/sys/class/dmi/id/board_name") {
+        if let Ok(board_name) = std::fs::read_to_string("/sys/class/dmi/id/product_name") {
             match board_name.trim() {
                 "dstack" | "qemu" => return Some(Self::Dstack),
                 "Google Compute Engine" => return Some(Self::Gcp),

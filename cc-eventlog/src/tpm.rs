@@ -57,7 +57,14 @@ impl TpmRawEvent {
             .map(|d| d.hash.clone())
     }
 
+    fn is_extended_to_pcr(&self) -> bool {
+        self.event_type != crate::tcg::EV_NO_ACTION
+    }
+
     fn to_simple_event(&self) -> Option<TpmEvent> {
+        if !self.is_extended_to_pcr() {
+            return None;
+        }
         self.sha256_digest().map(|digest| TpmEvent {
             pcr_index: self.pcr_index,
             digest,

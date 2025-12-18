@@ -66,24 +66,23 @@ impl AttestationMode {
 
     /// Detect attestation mode from system
     pub fn detect() -> Result<Self> {
-        // Fallback: detect from available devices
         let has_tdx = std::path::Path::new("/dev/tdx_guest").exists();
 
-        // First, try to detect platform from DMI board name
-        let platform = Platform::detect().context("Failed to detect platform")?;
+        // First, try to detect platform from DMI product name
+        let platform = Platform::detect_or_dstack();
         match platform {
             Platform::Dstack => {
                 if has_tdx {
                     return Ok(Self::DstackTdx);
                 }
-                bail!("Unsupported platform: Dstack");
+                bail!("Unsupported platform: Dstack(-tdx)");
             }
             Platform::Gcp => {
                 // GCP platform: TDX + TPM dual mode
                 if has_tdx {
                     return Ok(Self::GcpTdx);
                 }
-                bail!("Unsupported platform: GCP");
+                bail!("Unsupported platform: GCP(-tdx)");
             }
         }
     }
@@ -208,7 +207,7 @@ impl DstackVerifiedReport {
             (Some(tdx_report), Some(rd)) => {
                 let td_report_data = get_report_data(tdx_report);
                 if td_report_data != rd {
-                    bail!("report data mismatch");
+                    bail!("tdx report_data mismatch");
                 }
                 td_report_data
             }
@@ -218,8 +217,14 @@ impl DstackVerifiedReport {
         };
 
         if let Some(tpm_report) = &self.tpm_report {
-            if tpm_report.attest.qualified_data != expected {
-                bail!("report data mismatch");
+            let expected_tpm_report_data = sha256(&[&expected]).to_vec();
+            if tpm_report.attest.qualified_data != expected_tpm_report_data {
+                bail!(
+                    "tpm qualified_data mismatch, expected: {}, actual: {}, report_data: {}",
+                    hex_fmt::HexFmt(&expected_tpm_report_data),
+                    hex_fmt::HexFmt(&tpm_report.attest.qualified_data),
+                    hex_fmt::HexFmt(&expected)
+                );
             }
         }
         Ok(expected)
@@ -230,7 +235,7 @@ impl DstackVerifiedReport {
 pub type VerifiedAttestation = Attestation<DstackVerifiedReport>;
 
 /// Represents a TDX quote
-#[derive(Clone)]
+#[derive(Clone, Encode, Decode)]
 pub struct TdxQuote {
     /// The quote gererated by Intel QE
     pub quote: Vec<u8>,
@@ -238,8 +243,37 @@ pub struct TdxQuote {
     pub event_log: Vec<EventLog>,
 }
 
+/// Represents a versioned attestation
+#[derive(Clone, Encode, Decode)]
+pub enum VersionedAttestation {
+    /// Version 0
+    V0 {
+        /// The attestation report
+        attestation: Attestation,
+    },
+}
+
+impl VersionedAttestation {
+    /// Decode VerifiedAttestation from scale encoded bytes
+    pub fn from_scale(scale: &[u8]) -> Result<Self> {
+        Self::decode(&mut &scale[..]).context("Failed to decode VersionedAttestation")
+    }
+
+    /// Encode to scale encoded bytes
+    pub fn to_scale(&self) -> Vec<u8> {
+        self.encode()
+    }
+
+    /// Turn into latest version of attestation
+    pub fn into_inner(self) -> Attestation {
+        match self {
+            Self::V0 { attestation } => attestation,
+        }
+    }
+}
+
 /// Attestation data
-#[derive(Clone)]
+#[derive(Clone, Encode, Decode)]
 pub struct Attestation<R = ()> {
     /// Attestation mode
     pub mode: AttestationMode,
@@ -250,8 +284,32 @@ pub struct Attestation<R = ()> {
     /// TPM quote (only for TPM mode)
     pub tpm_quote: Option<TpmQuote>,
 
+    /// The configuration of the VM
+    pub config: String,
+
     /// Verified report
     pub report: R,
+}
+
+impl<T> Attestation<T> {
+    /// Get TDX quote bytes
+    pub fn get_tdx_quote_bytes(&self) -> Option<Vec<u8>> {
+        self.tdx_quote.as_ref().map(|q| q.quote.clone())
+    }
+
+    /// Get TDX event log bytes
+    pub fn get_tdx_event_log_bytes(&self) -> Option<Vec<u8>> {
+        self.tdx_quote
+            .as_ref()
+            .map(|q| serde_json::to_vec(&q.event_log).unwrap_or_default())
+    }
+
+    /// Get TDX event log string
+    pub fn get_tdx_event_log_string(&self) -> Option<String> {
+        self.tdx_quote
+            .as_ref()
+            .map(|q| serde_json::to_string(&q.event_log).unwrap_or_default())
+    }
 }
 
 impl<T> Attestation<T> {
@@ -396,10 +454,14 @@ impl<T> Attestation<T> {
 impl Attestation {
     /// Create an attestation for local machine (auto-detect mode)
     pub fn local() -> Result<Self> {
+        Self::quote(&[0u8; 64])
+    }
+
+    /// Create an attestation from a report data
+    pub fn quote(report_data: &[u8; 64]) -> Result<Self> {
         let mode = AttestationMode::detect()?;
-        let report_data = [0u8; 64];
         let tdx_quote = if mode.has_tdx() {
-            let quote = tdx_attest::get_quote(&report_data).context("Failed to get quote")?;
+            let quote = tdx_attest::get_quote(report_data).context("Failed to get quote")?;
             let event_log =
                 tdx_attest::eventlog::read_event_logs().context("Failed to read event logs")?;
             Some(TdxQuote { quote, event_log })
@@ -407,20 +469,30 @@ impl Attestation {
             None
         };
         let tpm_quote = if mode.has_tpm() {
+            let qualifying_data = ez_hash::sha256(report_data);
             let tpm_ctx = tpm_attest::TpmContext::detect().context("Failed to open TPM context")?;
             let quote = tpm_ctx
-                .create_quote(&report_data, &tpm_attest::dstack_pcr_policy())
+                .create_quote(&qualifying_data, &tpm_attest::dstack_pcr_policy())
                 .context("Failed to create TPM quote")?;
             Some(quote)
         } else {
             None
         };
+        // TODO: Find a better way handling this hardcode path
+        let config =
+            fs_err::read_to_string("/dstack/.host-shared/.sys-config.json").unwrap_or_default();
         Ok(Self {
             mode,
             tdx_quote,
             tpm_quote,
+            config,
             report: (),
         })
+    }
+
+    /// Wrap into a versioned attestation for encoding
+    pub fn into_versioned(self) -> VersionedAttestation {
+        VersionedAttestation::V0 { attestation: self }
     }
 }
 
@@ -435,62 +507,33 @@ impl Attestation {
         get_ext: impl Fn(&[u64]) -> Result<Option<Vec<u8>>>,
     ) -> Result<Option<Self>> {
         // Try to detect attestation mode from certificate extension
-        let mode = if let Some(mode_bytes) = get_ext(oids::PHALA_RATLS_ATTESTATION_MODE)? {
-            std::str::from_utf8(&mode_bytes)
-                .context("Invalid attestation mode encoding")?
-                .parse()
-                .context("Invalid attestation mode")?
-        } else {
-            // Backward compatibility: if no mode specified
-            let has_tdx = get_ext(oids::PHALA_RATLS_TDX_QUOTE)?.is_some();
-            if !has_tdx {
-                bail!("Unknown attestation mode");
-            }
-            AttestationMode::DstackTdx
+        if let Some(attestation_bytes) = get_ext(oids::PHALA_RATLS_ATTESTATION)? {
+            let VersionedAttestation::V0 { attestation } =
+                VersionedAttestation::from_scale(&attestation_bytes)
+                    .context("Failed to decode attestation from cert extension")?;
+            return Ok(Some(attestation));
+        }
+        // Backward compatibility: if PHALA_RATLS_ATTESTATION
+        let Some(tdx_quote) = get_ext(oids::PHALA_RATLS_TDX_QUOTE)? else {
+            return Ok(None);
         };
-        let tdx_quote;
-        let tdx_event_log: Vec<EventLog>;
-
-        if mode.has_tdx() {
-            tdx_quote = match get_ext(oids::PHALA_RATLS_TDX_QUOTE)? {
-                Some(v) => v,
-                None => return Ok(None),
-            };
-            let mut raw_event_log =
-                get_ext(oids::PHALA_RATLS_EVENT_LOG)?.context("TDX event log missing")?;
-            tdx_event_log = if !raw_event_log.is_empty() {
-                // Decompress if needed (handles both compressed and uncompressed formats)
-                raw_event_log = crate::cert::decompress_event_log(&raw_event_log)
-                    .context("failed to decompress event log")?;
-                serde_json::from_slice(&raw_event_log).context("invalid event log")?
-            } else {
-                vec![]
-            };
+        let raw_event_log =
+            get_ext(oids::PHALA_RATLS_EVENT_LOG)?.context("TDX event log missing")?;
+        let tdx_event_log = if !raw_event_log.is_empty() {
+            // Decompress if needed (handles both compressed and uncompressed formats)
+            serde_json::from_slice(&raw_event_log).context("invalid event log")?
         } else {
-            tdx_quote = vec![];
-            tdx_event_log = vec![];
-        };
-
-        let tpm_quote = if mode.has_tpm() {
-            let tpm_quote_json = match get_ext(oids::PHALA_RATLS_TPM_QUOTE)? {
-                Some(v) => v,
-                None => return Ok(None),
-            };
-            Some(
-                serde_json::from_slice(&tpm_quote_json)
-                    .context("Failed to parse TPM quote data")?,
-            )
-        } else {
-            None
+            vec![]
         };
 
         Ok(Some(Self {
-            mode,
-            tdx_quote: mode.has_tdx().then_some(TdxQuote {
+            mode: AttestationMode::DstackTdx,
+            tdx_quote: Some(TdxQuote {
                 quote: tdx_quote,
                 event_log: tdx_event_log,
             }),
-            tpm_quote,
+            tpm_quote: None,
+            config: "".into(),
             report: (),
         }))
     }
@@ -552,6 +595,7 @@ impl Attestation {
             mode: self.mode,
             tdx_quote: self.tdx_quote,
             tpm_quote: self.tpm_quote,
+            config: self.config,
             report,
         })
     }

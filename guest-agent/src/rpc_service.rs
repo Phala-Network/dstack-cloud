@@ -12,9 +12,9 @@ use dstack_guest_agent_rpc::{
     tappd_server::{TappdRpc, TappdServer},
     worker_server::{WorkerRpc, WorkerServer},
     AppInfo, DeriveK256KeyResponse, DeriveKeyArgs, EmitEventArgs, GetAttestationForAppKeyRequest,
-    GetKeyArgs, GetKeyResponse, GetQuoteResponse, GetTlsKeyArgs, GetTlsKeyResponse, RawQuoteArgs,
-    SignRequest, SignResponse, TdxQuoteArgs, TdxQuoteResponse, VerifyRequest, VerifyResponse,
-    WorkerVersion,
+    GetAttestationResponse, GetKeyArgs, GetKeyResponse, GetQuoteResponse, GetTlsKeyArgs,
+    GetTlsKeyResponse, RawQuoteArgs, SignRequest, SignResponse, TdxQuoteArgs, TdxQuoteResponse,
+    VerifyRequest, VerifyResponse, WorkerVersion,
 };
 use dstack_types::{AppKeys, SysConfig};
 use ed25519_dalek::ed25519::signature::hazmat::{PrehashSigner, PrehashVerifier};
@@ -279,11 +279,6 @@ impl DstackGuestRpc for InternalRpcHandler {
             Some(padded)
         }
         let report_data = pad64(&request.report_data).context("Report data is too long")?;
-        let quote_type = if request.quote_type.is_empty() {
-            "tdx"
-        } else {
-            request.quote_type.as_str()
-        };
 
         if self.state.config().simulator.enabled {
             return simulate_quote(
@@ -292,41 +287,15 @@ impl DstackGuestRpc for InternalRpcHandler {
                 &self.state.inner.vm_config,
             );
         }
-
-        match quote_type {
-            "tdx" => {
-                let quote =
-                    tdx_attest::get_quote(&report_data).context("Failed to get TDX quote")?;
-                let event_log = read_event_logs().context("Failed to decode event log")?;
-                let event_log =
-                    serde_json::to_string(&event_log).context("Failed to serialize event log")?;
-
-                Ok(GetQuoteResponse {
-                    quote,
-                    event_log,
-                    report_data: report_data.to_vec(),
-                    vm_config: self.state.inner.vm_config.clone(),
-                })
-            }
-            "tpm" => {
-                let tpm = tpm_attest::TpmContext::detect().context("Failed to open TPM context")?;
-                let pcr_selection = tpm_attest::dstack_pcr_policy();
-                let tpm_quote = tpm
-                    .create_quote(&report_data, &pcr_selection)
-                    .context("Failed to create TPM quote")?;
-
-                let quote =
-                    serde_json::to_vec(&tpm_quote).context("Failed to serialize TPM quote")?;
-
-                Ok(GetQuoteResponse {
-                    quote,
-                    event_log: String::new(),
-                    report_data: report_data.to_vec(),
-                    vm_config: self.state.inner.vm_config.clone(),
-                })
-            }
-            _ => Err(anyhow::anyhow!("Unsupported quote type: {}", quote_type)),
-        }
+        let attestation = Attestation::quote(&report_data).context("Failed to get quote")?;
+        let tdx_quote = attestation.get_tdx_quote_bytes();
+        let tdx_event_log = attestation.get_tdx_event_log_string();
+        Ok(GetQuoteResponse {
+            quote: tdx_quote.unwrap_or_default(),
+            event_log: tdx_event_log.unwrap_or_default(),
+            report_data: report_data.to_vec(),
+            vm_config: self.state.inner.vm_config.clone(),
+        })
     }
 
     async fn emit_event(self, request: EmitEventArgs) -> Result<()> {
@@ -424,6 +393,11 @@ impl DstackGuestRpc for InternalRpcHandler {
             _ => return Err(anyhow::anyhow!("Unsupported algorithm")),
         };
         Ok(VerifyResponse { valid })
+    }
+
+    async fn get_attestation(self, request: RawQuoteArgs) -> Result<GetAttestationResponse> {
+        let todo = "implement it";
+        todo!()
     }
 }
 

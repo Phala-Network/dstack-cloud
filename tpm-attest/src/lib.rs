@@ -248,7 +248,7 @@ impl TpmContext {
 
     pub fn create_quote(
         &self,
-        qualifying_data: &[u8],
+        qualifying_data: &[u8; 32],
         pcr_selection: &PcrSelection,
     ) -> Result<TpmQuote> {
         gcp_ak::create_quote_with_gcp_ak(Some(&self.tcti), qualifying_data, pcr_selection)
@@ -256,7 +256,7 @@ impl TpmContext {
 
     pub fn create_quote_with_algo(
         &self,
-        qualifying_data: &[u8],
+        qualifying_data: &[u8; 32],
         pcr_selection: &PcrSelection,
         key_algo: KeyAlgorithm,
     ) -> Result<TpmQuote> {

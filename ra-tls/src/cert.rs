@@ -14,25 +14,23 @@ use rcgen::{
     ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PublicKeyData, SanType,
 };
 use ring::rand::SystemRandom;
-use tdx_attest::eventlog::read_runtime_event_logs;
-use tdx_attest::get_quote;
+use ring::signature::{
+    EcdsaKeyPair, UnparsedPublicKey, ECDSA_P256_SHA256_ASN1, ECDSA_P256_SHA256_ASN1_SIGNING,
+};
+use scale::{Decode, Encode};
 use x509_parser::der_parser::Oid;
 use x509_parser::prelude::{FromDer as _, X509Certificate};
 use x509_parser::public_key::PublicKey;
 use x509_parser::x509::SubjectPublicKeyInfo;
 
-use crate::attestation::{Attestation, AttestationMode, QuoteContentType, TdxQuote, TpmQuote};
+use crate::attestation::{
+    Attestation, AttestationMode, QuoteContentType, TdxQuote, VersionedAttestation,
+};
 use crate::oids::{
-    PHALA_RATLS_APP_ID, PHALA_RATLS_ATTESTATION_MODE, PHALA_RATLS_CERT_USAGE, PHALA_RATLS_TPM_QUOTE,
+    PHALA_RATLS_APP_ID, PHALA_RATLS_ATTESTATION, PHALA_RATLS_CERT_USAGE, PHALA_RATLS_EVENT_LOG,
+    PHALA_RATLS_TDX_QUOTE,
 };
-use crate::{
-    oids::{PHALA_RATLS_EVENT_LOG, PHALA_RATLS_TDX_QUOTE},
-    traits::CertExt,
-};
-use ring::signature::{
-    EcdsaKeyPair, UnparsedPublicKey, ECDSA_P256_SHA256_ASN1, ECDSA_P256_SHA256_ASN1_SIGNING,
-};
-use scale::{Decode, Encode};
+use crate::traits::CertExt;
 
 /// A CA certificate and private key.
 pub struct CaCert {
@@ -90,6 +88,7 @@ impl CaCert {
         let pki = rcgen::SubjectPublicKeyInfo::from_der(&csr.pubkey)
             .context("Failed to parse signature")?;
         let cfg = &csr.config;
+        let attestation = cfg.ext_quote.then_some(&csr.attestation);
         let req = CertRequest::builder()
             .key(&pki)
             .subject(&cfg.subject)
@@ -97,14 +96,7 @@ impl CaCert {
             .alt_names(&cfg.subject_alt_names)
             .usage_server_auth(cfg.usage_server_auth)
             .usage_client_auth(cfg.usage_client_auth)
-            .maybe_attestation_mode(cfg.ext_quote.then_some(csr.attestation_mode))
-            .maybe_tdx_quote(cfg.ext_quote.then_some(&csr.tdx_quote))
-            .maybe_tdx_event_log(cfg.ext_quote.then_some(&csr.tdx_event_log))
-            .maybe_tpm_quote(if cfg.ext_quote {
-                csr.tpm_quote.as_ref()
-            } else {
-                None
-            })
+            .maybe_attestation(attestation)
             .maybe_app_id(app_id)
             .special_usage(usage)
             .build();
@@ -249,27 +241,31 @@ pub struct CertSigningRequestV2 {
     pub pubkey: Vec<u8>,
     /// The certificate configuration.
     pub config: CertConfig,
-    /// The attestation mode.
-    pub attestation_mode: AttestationMode,
-    /// The quote of the certificate.
-    pub tdx_quote: Vec<u8>,
-    /// The event log of the certificate.
-    pub tdx_event_log: Vec<u8>,
-    /// The TPM quote of the certificate.
-    pub tpm_quote: Option<TpmQuote>,
+    /// The attestation.
+    pub attestation: VersionedAttestation,
 }
 
-impl From<CertSigningRequestV1> for CertSigningRequestV2 {
-    fn from(v0: CertSigningRequestV1) -> Self {
-        Self {
+impl TryFrom<CertSigningRequestV1> for CertSigningRequestV2 {
+    type Error = anyhow::Error;
+    fn try_from(v0: CertSigningRequestV1) -> Result<Self, Self::Error> {
+        Ok(Self {
             confirm: v0.confirm,
             pubkey: v0.pubkey,
             config: v0.config,
-            attestation_mode: AttestationMode::DstackTdx,
-            tdx_quote: v0.quote,
-            tdx_event_log: v0.event_log,
-            tpm_quote: None,
-        }
+            attestation: VersionedAttestation::V0 {
+                attestation: Attestation {
+                    mode: AttestationMode::DstackTdx,
+                    tpm_quote: None,
+                    tdx_quote: Some(TdxQuote {
+                        quote: v0.quote,
+                        event_log: serde_json::from_slice(&v0.event_log)
+                            .context("Failed to parse tdx_event_log")?,
+                    }),
+                    config: "".into(),
+                    report: (),
+                },
+            },
+        })
     }
 }
 
@@ -294,17 +290,8 @@ impl CertSigningRequestV2 {
     }
 
     /// To attestation
-    pub fn to_attestation(&self) -> Result<Attestation> {
-        Ok(Attestation {
-            mode: self.attestation_mode,
-            tdx_quote: Some(TdxQuote {
-                quote: self.tdx_quote.clone(),
-                event_log: serde_json::from_slice(&self.tdx_event_log)
-                    .context("Failed to parse tdx_event_log")?,
-            }),
-            tpm_quote: self.tpm_quote.clone(),
-            report: (),
-        })
+    pub fn to_attestation(&self) -> Result<VersionedAttestation> {
+        Ok(self.attestation.clone())
     }
 }
 
@@ -318,10 +305,7 @@ pub struct CertRequest<'a, Key> {
     ca_level: Option<u8>,
     app_id: Option<&'a [u8]>,
     special_usage: Option<&'a str>,
-    tdx_quote: Option<&'a [u8]>,
-    tdx_event_log: Option<&'a [u8]>,
-    attestation_mode: Option<AttestationMode>,
-    tpm_quote: Option<&'a TpmQuote>,
+    attestation: Option<&'a VersionedAttestation>,
     not_before: Option<SystemTime>,
     not_after: Option<SystemTime>,
     #[builder(default = false)]
@@ -357,20 +341,6 @@ impl<Key> CertRequest<'_, Key> {
                     .push(SanType::DnsName(alt_name.clone().try_into()?));
             }
         }
-        if let Some(quote) = self.tdx_quote {
-            let content = yasna::construct_der(|writer| {
-                writer.write_bytes(quote);
-            });
-            let ext = CustomExtension::from_oid_content(PHALA_RATLS_TDX_QUOTE, content);
-            params.custom_extensions.push(ext);
-        }
-        if let Some(event_log) = self.tdx_event_log {
-            let content = yasna::construct_der(|writer| {
-                writer.write_bytes(event_log);
-            });
-            let ext = CustomExtension::from_oid_content(PHALA_RATLS_EVENT_LOG, content);
-            params.custom_extensions.push(ext);
-        }
         if let Some(app_id) = self.app_id {
             let content = yasna::construct_der(|writer| {
                 writer.write_bytes(app_id);
@@ -385,21 +355,36 @@ impl<Key> CertRequest<'_, Key> {
             let ext = CustomExtension::from_oid_content(PHALA_RATLS_CERT_USAGE, content);
             params.custom_extensions.push(ext);
         }
-        if let Some(mode) = self.attestation_mode {
-            let content = yasna::construct_der(|writer| {
-                writer.write_bytes(mode.as_str().as_bytes());
-            });
-            let ext = CustomExtension::from_oid_content(PHALA_RATLS_ATTESTATION_MODE, content);
-            params.custom_extensions.push(ext);
-        }
-        if let Some(tpm_quote) = self.tpm_quote {
-            let tpm_json =
-                serde_json::to_vec(tpm_quote).context("Failed to serialize TPM quote data")?;
-            let content = yasna::construct_der(|writer| {
-                writer.write_bytes(&tpm_json);
-            });
-            let ext = CustomExtension::from_oid_content(PHALA_RATLS_TPM_QUOTE, content);
-            params.custom_extensions.push(ext);
+        if let Some(ver_att) = self.attestation {
+            let VersionedAttestation::V0 { attestation } = ver_att;
+            match attestation.mode {
+                AttestationMode::DstackTdx => {
+                    // For backward compatibility, we serialize the quote to the classic oids.
+                    let Some(tdx_quote) = &attestation.tdx_quote else {
+                        bail!("missing tdx quote")
+                    };
+                    let content = yasna::construct_der(|writer| {
+                        writer.write_bytes(&tdx_quote.quote);
+                    });
+                    let ext = CustomExtension::from_oid_content(PHALA_RATLS_TDX_QUOTE, content);
+                    params.custom_extensions.push(ext);
+                    let event_log = serde_json::to_vec(&tdx_quote.event_log)
+                        .context("Failed to serialize event log")?;
+                    let content = yasna::construct_der(|writer| {
+                        writer.write_bytes(&event_log);
+                    });
+                    let ext = CustomExtension::from_oid_content(PHALA_RATLS_EVENT_LOG, content);
+                    params.custom_extensions.push(ext);
+                }
+                _ => {
+                    let attestation_bytes = ver_att.to_scale();
+                    let content = yasna::construct_der(|writer| {
+                        writer.write_bytes(&attestation_bytes);
+                    });
+                    let ext = CustomExtension::from_oid_content(PHALA_RATLS_ATTESTATION, content);
+                    params.custom_extensions.push(ext);
+                }
+            }
         }
         if let Some(ca_level) = self.ca_level {
             params.is_ca = IsCa::Ca(BasicConstraints::Constrained(ca_level));
@@ -475,8 +460,8 @@ pub struct CertPair {
 /// Magic prefix for gzip-compressed event log (version 1)
 pub const EVENTLOG_GZIP_MAGIC: &[u8] = b"ELGZv1";
 
-/// Compress event log data using gzip
-pub fn compress_event_log(data: &[u8]) -> Result<Vec<u8>> {
+/// Compress a certificate extension value
+pub fn compress_ext_value(data: &[u8]) -> Result<Vec<u8>> {
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::io::Write;
@@ -496,8 +481,8 @@ pub fn compress_event_log(data: &[u8]) -> Result<Vec<u8>> {
     Ok(result)
 }
 
-/// Decompress event log data (handles both compressed and uncompressed formats)
-pub fn decompress_event_log(data: &[u8]) -> Result<Vec<u8>> {
+/// Decompress a certificate extension value
+pub fn decompress_ext_value(data: &[u8]) -> Result<Vec<u8>> {
     use flate2::read::GzDecoder;
     use std::io::Read;
 
@@ -518,7 +503,6 @@ pub fn decompress_event_log(data: &[u8]) -> Result<Vec<u8>> {
 
 /// Generate a certificate with RA-TLS quote and event log.
 pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertPair> {
-    use crate::attestation::Attestation;
     use rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256};
 
     let ca = CaCert::new(ca_cert_pem, ca_key_pem)?;
@@ -527,31 +511,19 @@ pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertP
     let pubkey = key.public_key_der();
 
     // Get attestation data (auto-detects mode: TDX, vTPM, or both)
-    let attestation = Attestation::local().context("Failed to collect attestation")?;
-    let mode = attestation.mode;
+    let mode = AttestationMode::detect().context("Failed to detect attestation mode")?;
 
-    // Prepare TDX quote and event log if needed
-    let (tdx_quote, tdx_event_log) = if mode.has_tdx() {
-        let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
-        let quote = get_quote(&report_data).context("Failed to get TDX quote")?;
-        let event_logs = read_runtime_event_logs().context("Failed to read event logs")?;
-        let event_log =
-            serde_json::to_vec(&event_logs).context("Failed to serialize RTMR3 events")?;
-        let event_log =
-            compress_event_log(&event_log).context("Failed to compress RTMR3 events")?;
-        (Some(quote), Some(event_log))
-    } else {
-        (None, None)
-    };
+    let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
+
+    let attestation = Attestation::quote(&report_data)
+        .context("Failed to get quote for cert pubkey")?
+        .into_versioned();
 
     // Build certificate request with all extensions
     let req = CertRequest::builder()
         .subject("RA-TLS TEMP Cert")
         .key(&key)
-        .maybe_attestation_mode(Some(mode))
-        .maybe_tdx_quote(tdx_quote.as_deref())
-        .maybe_tdx_event_log(tdx_event_log.as_deref())
-        .maybe_tpm_quote(attestation.tpm_quote.as_ref())
+        .attestation(&attestation)
         .build();
     let cert = ca.sign(req).context("Failed to sign certificate")?;
     Ok(CertPair {
@@ -564,6 +536,7 @@ pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertP
 mod tests {
     use super::*;
     use rcgen::PKCS_ECDSA_P256_SHA256;
+    use scale::Encode;
 
     #[test]
     fn test_csr_signing_and_verification() {
@@ -624,15 +597,15 @@ mod tests {
         let original = event_log.as_bytes();
 
         // Compress
-        let compressed = compress_event_log(original).unwrap();
+        let compressed = compress_ext_value(original).unwrap();
         assert!(compressed.starts_with(EVENTLOG_GZIP_MAGIC));
 
         // Decompress
-        let decompressed = decompress_event_log(&compressed).unwrap();
+        let decompressed = decompress_ext_value(&compressed).unwrap();
         assert_eq!(decompressed, original);
 
         // Test backwards compatibility with uncompressed data
-        let decompressed_uncompressed = decompress_event_log(original).unwrap();
+        let decompressed_uncompressed = decompress_ext_value(original).unwrap();
         assert_eq!(decompressed_uncompressed, original);
     }
 
@@ -650,14 +623,69 @@ mod tests {
             ).as_bytes());
         }
 
-        let compressed = compress_event_log(&large_data).unwrap();
+        let compressed = compress_ext_value(&large_data).unwrap();
         let ratio = compressed.len() as f64 / large_data.len() as f64;
 
         // Compression should achieve at least 50% reduction for repetitive data
         assert!(ratio < 0.5, "compression ratio {} should be < 0.5", ratio);
 
         // Verify decompression works
-        let decompressed = decompress_event_log(&compressed).unwrap();
+        let decompressed = decompress_ext_value(&compressed).unwrap();
         assert_eq!(decompressed, large_data);
+    }
+
+    #[test]
+    fn test_csr_v2_scale_encoding_stable() {
+        let csr = CertSigningRequestV2 {
+            confirm: "please sign cert:".to_string(),
+            pubkey: vec![1, 2, 3],
+            config: CertConfig {
+                org_name: None,
+                subject: "test.example.com".to_string(),
+                subject_alt_names: vec![],
+                usage_server_auth: true,
+                usage_client_auth: false,
+                ext_quote: false,
+            },
+            attestation: Attestation {
+                mode: AttestationMode::DstackTdx,
+                tdx_quote: None,
+                tpm_quote: None,
+                report: (),
+            },
+        };
+
+        let actual = hex::encode(csr.encode());
+        let expected = "44706c65617365207369676e20636572743a0c0102030040746573742e6578616d706c652e636f6d00010000000000";
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_csr_v2_scale_encoding_stable_with_tdx_quote() {
+        let csr = CertSigningRequestV2 {
+            confirm: "please sign cert:".to_string(),
+            pubkey: vec![1, 2, 3],
+            config: CertConfig {
+                org_name: None,
+                subject: "test.example.com".to_string(),
+                subject_alt_names: vec![],
+                usage_server_auth: true,
+                usage_client_auth: false,
+                ext_quote: true,
+            },
+            attestation: Attestation {
+                mode: AttestationMode::DstackTdx,
+                tdx_quote: Some(TdxQuote {
+                    quote: vec![9],
+                    event_log: vec![],
+                }),
+                tpm_quote: None,
+                report: (),
+            },
+        };
+
+        let actual = hex::encode(csr.encode());
+        let expected = "44706c65617365207369676e20636572743a0c0102030040746573742e6578616d706c652e636f6d00010001000104090000";
+        assert_eq!(actual, expected);
     }
 }
