@@ -103,6 +103,21 @@ if ! [[ -e /dev/tdx_guest ]]; then
 	modprobe tdx-guest
 fi
 
+# Mount configfs for TSM (required for TDX quote generation)
+if [[ ! -d /sys/kernel/config ]]; then
+	mkdir -p /sys/kernel/config
+fi
+if ! mountpoint -q /sys/kernel/config; then
+	log "Mounting configfs for TSM..."
+	mount -t configfs none /sys/kernel/config
+fi
+
+# Create TSM report directory for TDX attestation
+if [[ -e /dev/tdx_guest ]] && [[ ! -d /sys/kernel/config/tsm/report/com.intel.dcap ]]; then
+	log "Creating TSM report directory..."
+	mkdir -p /sys/kernel/config/tsm/report/com.intel.dcap
+fi
+
 # Setup dstack system
 log "Preparing dstack system..."
 
