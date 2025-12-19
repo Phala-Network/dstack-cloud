@@ -25,7 +25,7 @@ use dstack_types::{
     shared_filenames::{
         APP_COMPOSE, ENCRYPTED_ENV, HOST_SHARED_DISK_LABEL, INSTANCE_INFO, USER_CONFIG,
     },
-    AppCompose,
+    AppCompose, KeyProviderKind,
 };
 use dstack_vmm_rpc as pb;
 use fs_err as fs;
@@ -428,6 +428,7 @@ impl VmConfig {
         if !shared_dir.exists() {
             fs::create_dir_all(&shared_dir)?;
         }
+        let app_compose = workdir.app_compose().context("Failed to get app compose")?;
         let qemu = &cfg.qemu_path;
         let mut smp = self.manifest.vcpu.max(1);
         let mut mem = self.manifest.memory;
@@ -532,6 +533,21 @@ impl VmConfig {
 
         self.configure_machine(&mut command, &workdir, cfg)?;
         self.configure_smbios(&mut command, cfg);
+
+        if matches!(app_compose.key_provider(), KeyProviderKind::Tpm) {
+            let tpm_path = if Path::new("/dev/tpmrm0").exists() {
+                "/dev/tpmrm0"
+            } else if Path::new("/dev/tpm0").exists() {
+                "/dev/tpm0"
+            } else {
+                bail!("TPM key provider requested but no TPM device found on host");
+            };
+            command
+                .arg("-tpmdev")
+                .arg(format!("passthrough,id=tpm0,path={tpm_path}"))
+                .arg("-device")
+                .arg("tpm-tis,tpmdev=tpm0");
+        }
 
         command
             .arg("-device")
