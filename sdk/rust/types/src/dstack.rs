@@ -117,12 +117,12 @@ pub struct GetQuoteResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "borsh_schema", derive(BorshSchema))]
-pub struct GetAttestationResponse {
+pub struct AttestResponse {
     /// The attestation in hexadecimal format
     pub attestation: String,
 }
 
-impl GetAttestationResponse {
+impl AttestResponse {
     pub fn decode_attestation(&self) -> Result<Vec<u8>, FromHexError> {
         hex::decode(&self.attestation)
     }

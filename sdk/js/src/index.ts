@@ -97,8 +97,8 @@ export interface GetQuoteResponse {
   replayRtmrs: () => string[]
 }
 
-export interface GetAttestationResponse {
-  __name__: Readonly<'GetAttestationResponse'>
+export interface AttestResponse {
+  __name__: Readonly<'AttestResponse'>
 
   attestation: Hex
 }
@@ -248,19 +248,19 @@ export class DstackClient<T extends TcbInfo = TcbInfoV05x> {
     return Object.freeze(result)
   }
 
-  async getAttestation(report_data: string | Buffer | Uint8Array): Promise<GetAttestationResponse> {
+  async attest(report_data: string | Buffer | Uint8Array): Promise<AttestResponse> {
     let hex = to_hex(report_data)
     if (hex.length > 128) {
       throw new Error(`Report data is too large, it should be less than 64 bytes.`)
     }
     const payload = JSON.stringify({ report_data: hex })
-    const result = await send_rpc_request<{ attestation: string }>(this.endpoint, '/GetAttestation', payload)
+    const result = await send_rpc_request<{ attestation: string }>(this.endpoint, '/Attest', payload)
     if ('error' in (result as any)) {
       const err = (result as any)['error'] as string
       throw new Error(err)
     }
     return Object.freeze({
-      __name__: 'GetAttestationResponse',
+      __name__: 'AttestResponse',
       attestation: result.attestation as Hex,
     })
   }

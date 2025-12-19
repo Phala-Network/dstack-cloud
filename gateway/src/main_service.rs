@@ -855,7 +855,7 @@ async fn get_or_generate_attestation(
     }
     let report_data = content_type.to_report_data(payload).to_vec();
     let response = agent
-        .get_attestation(RawQuoteArgs { report_data })
+        .attest(RawQuoteArgs { report_data })
         .await
         .context("Failed to get quote")?;
     let attestation = serde_json::to_string(&response).context("Failed to serialize quote")?;

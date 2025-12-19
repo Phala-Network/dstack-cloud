@@ -42,7 +42,7 @@ type GetQuoteResponse struct {
 }
 
 // Represents the response from an attestation request.
-type GetAttestationResponse struct {
+type AttestResponse struct {
 	Attestation []byte
 }
 
@@ -417,7 +417,7 @@ func (c *DstackClient) GetQuote(ctx context.Context, reportData []byte) (*GetQuo
 }
 
 // Gets a versioned attestation from the dstack service.
-func (c *DstackClient) GetAttestation(ctx context.Context, reportData []byte) (*GetAttestationResponse, error) {
+func (c *DstackClient) Attest(ctx context.Context, reportData []byte) (*AttestResponse, error) {
 	if len(reportData) > 64 {
 		return nil, fmt.Errorf("report data is too large, it should be at most 64 bytes")
 	}
@@ -426,7 +426,7 @@ func (c *DstackClient) GetAttestation(ctx context.Context, reportData []byte) (*
 		"report_data": hex.EncodeToString(reportData),
 	}
 
-	data, err := c.sendRPCRequest(ctx, "/GetAttestation", payload)
+	data, err := c.sendRPCRequest(ctx, "/Attest", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -443,7 +443,7 @@ func (c *DstackClient) GetAttestation(ctx context.Context, reportData []byte) (*
 		return nil, err
 	}
 
-	return &GetAttestationResponse{Attestation: attestation}, nil
+	return &AttestResponse{Attestation: attestation}, nil
 }
 
 // Sends a request to get information about the CVM instance

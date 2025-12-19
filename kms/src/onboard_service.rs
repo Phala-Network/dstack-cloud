@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use dstack_guest_agent_rpc::{
-    dstack_guest_client::DstackGuestClient, GetAttestationResponse, RawQuoteArgs,
+    dstack_guest_client::DstackGuestClient, AttestResponse, RawQuoteArgs,
 };
 use dstack_kms_rpc::{
     kms_client::KmsClient,
@@ -296,10 +296,8 @@ fn dstack_client() -> DstackGuestClient<PrpcClient> {
     DstackGuestClient::new(http_client)
 }
 
-async fn app_attest(report_data: Vec<u8>) -> Result<GetAttestationResponse> {
-    dstack_client()
-        .get_attestation(RawQuoteArgs { report_data })
-        .await
+async fn app_attest(report_data: Vec<u8>) -> Result<AttestResponse> {
+    dstack_client().attest(RawQuoteArgs { report_data }).await
 }
 
 async fn attest_keys(p256_pubkey: &[u8], k256_pubkey: &[u8]) -> Result<Vec<u8>> {

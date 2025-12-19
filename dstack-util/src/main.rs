@@ -351,7 +351,9 @@ fn cmd_attest(args: AttestArgs) -> Result<()> {
         return Ok(());
     }
 
-    let output = args.output.unwrap_or_else(|| PathBuf::from("attestation.bin"));
+    let output = args
+        .output
+        .unwrap_or_else(|| PathBuf::from("attestation.bin"));
     fs::write(&output, &attestation).context("Failed to write attestation sample")?;
     Ok(())
 }

@@ -45,7 +45,7 @@ service DstackGuest {
 
   // Generates a versioned attestation with the given report data.
   // Returns a dstack-defined attestation format that supports different attestation modes across platforms.
-  rpc GetAttestation(RawQuoteArgs) returns (GetAttestationResponse) {}
+  rpc Attest(RawQuoteArgs) returns (AttestResponse) {}
 
   // Emit an event. This extends the event to RTMR3 on TDX platform.
   rpc EmitEvent(EmitEventArgs) returns (google.protobuf.Empty) {}
@@ -173,7 +173,7 @@ message TdxQuoteResponse {
   string prefix = 4;
 }
 
-message GetAttestationResponse {
+message AttestResponse {
   // The attestation
   bytes attestation = 1;
 }

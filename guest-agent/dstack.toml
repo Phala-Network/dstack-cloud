@@ -19,6 +19,7 @@ data_disks = ["/"]
 [default.core.simulator]
 enabled = false
 quote_file = "quote.hex"
+attestation_file = "attestation.bin"
 event_log_file = "eventlog.json"
 sys_config_file = "sys-config.json"
 

@@ -11,8 +11,8 @@ use dstack_guest_agent_rpc::{
     dstack_guest_server::{DstackGuestRpc, DstackGuestServer},
     tappd_server::{TappdRpc, TappdServer},
     worker_server::{WorkerRpc, WorkerServer},
-    AppInfo, DeriveK256KeyResponse, DeriveKeyArgs, EmitEventArgs, GetAttestationForAppKeyRequest,
-    GetAttestationResponse, GetKeyArgs, GetKeyResponse, GetQuoteResponse, GetTlsKeyArgs,
+    AppInfo, AttestResponse, DeriveK256KeyResponse, DeriveKeyArgs, EmitEventArgs,
+    GetAttestationForAppKeyRequest, GetKeyArgs, GetKeyResponse, GetQuoteResponse, GetTlsKeyArgs,
     GetTlsKeyResponse, RawQuoteArgs, SignRequest, SignResponse, TdxQuoteArgs, TdxQuoteResponse,
     VerifyRequest, VerifyResponse, WorkerVersion,
 };
@@ -270,14 +270,6 @@ impl DstackGuestRpc for InternalRpcHandler {
     }
 
     async fn get_quote(self, request: RawQuoteArgs) -> Result<GetQuoteResponse> {
-        fn pad64(data: &[u8]) -> Option<[u8; 64]> {
-            if data.len() > 64 {
-                return None;
-            }
-            let mut padded = [0u8; 64];
-            padded[..data.len()].copy_from_slice(data);
-            Some(padded)
-        }
         let report_data = pad64(&request.report_data).context("Report data is too long")?;
         if self.state.config().simulator.enabled {
             return simulate_quote(
@@ -394,10 +386,39 @@ impl DstackGuestRpc for InternalRpcHandler {
         Ok(VerifyResponse { valid })
     }
 
-    async fn get_attestation(self, request: RawQuoteArgs) -> Result<GetAttestationResponse> {
-        let todo = "implement it";
-        todo!()
+    async fn attest(self, request: RawQuoteArgs) -> Result<AttestResponse> {
+        let report_data = pad64(&request.report_data).context("Report data is too long")?;
+        if self.state.config().simulator.enabled {
+            return simulate_attestation(
+                self.state.config(),
+                report_data,
+                &self.state.inner.vm_config,
+            );
+        }
+        let attestation = Attestation::quote(&report_data).context("Failed to get attestation")?;
+        Ok(AttestResponse {
+            attestation: attestation.into_versioned().to_scale(),
+        })
     }
+}
+
+fn pad64(data: &[u8]) -> Option<[u8; 64]> {
+    if data.len() > 64 {
+        return None;
+    }
+    let mut padded = [0u8; 64];
+    padded[..data.len()].copy_from_slice(data);
+    Some(padded)
+}
+
+fn simulate_attestation(
+    config: &Config,
+    report_data: [u8; 64],
+    vm_config: &str,
+) -> Result<AttestResponse> {
+    let attestation =
+        fs::read(&config.simulator.attestation_file).context("Failed to read attestation file")?;
+    Ok(AttestResponse { attestation })
 }
 
 fn simulate_quote(
