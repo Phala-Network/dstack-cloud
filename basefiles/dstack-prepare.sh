@@ -19,11 +19,10 @@ mount_overlay() {
     mkdir -p $dst/upper $dst/work
     mount -t overlay overlay -o lowerdir=$src,upperdir=$dst/upper,workdir=$dst/work $src
 }
-mount_overlay /etc/wireguard $OVERLAY_TMP
-mount_overlay /etc/docker $OVERLAY_TMP
-mount_overlay /usr/bin $OVERLAY_TMP
-mount_overlay /home/root $OVERLAY_TMP
-
+mount_overlay /etc $OVERLAY_TMP
+mount_overlay /usr $OVERLAY_TMP
+mount_overlay /bin $OVERLAY_TMP
+mount_overlay /home $OVERLAY_TMP
 
 # Make sure the system time is synchronized
 echo "Syncing system time..."
@@ -41,7 +40,6 @@ echo "Mounting docker dirs to persistent storage"
 mkdir -p $DATA_MNT/var/lib/docker
 mount --rbind $DATA_MNT/var/lib/docker /var/lib/docker
 mount --rbind $WORK_DIR /dstack
-mount_overlay /etc/users $OVERLAY_PERSIST
 
 cd /dstack
 
