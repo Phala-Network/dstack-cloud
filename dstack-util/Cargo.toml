@@ -32,9 +32,11 @@ x25519-dalek.workspace = true
 
 dstack-kms-rpc.workspace = true
 ra-rpc = { workspace = true, features = ["client"] }
-ra-tls.workspace = true
+ra-tls = { workspace = true, features = ["quote"] }
 dstack-gateway-rpc.workspace = true
 tdx-attest.workspace = true
+tpm-attest.workspace = true
+tpm-qvl = { workspace = true, features = ["crl-download"] }
 host-api = { workspace = true, features = ["client"] }
 cmd_lib.workspace = true
 toml.workspace = true
@@ -51,6 +53,8 @@ sodiumbox.workspace = true
 libc.workspace = true
 luks2.workspace = true
 scopeguard.workspace = true
+tempfile.workspace = true
+ez-hash.workspace = true
 
 [dev-dependencies]
 rand.workspace = true
