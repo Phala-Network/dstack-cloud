@@ -69,6 +69,7 @@ pub enum KeyProviderKind {
     None,
     Kms,
     Local,
+    Tpm,
 }
 
 impl KeyProviderKind {
@@ -78,6 +79,10 @@ impl KeyProviderKind {
 
     pub fn is_kms(&self) -> bool {
         matches!(self, KeyProviderKind::Kms)
+    }
+
+    pub fn is_tpm(&self) -> bool {
+        matches!(self, KeyProviderKind::Tpm)
     }
 }
 
@@ -190,6 +195,11 @@ pub enum KeyProvider {
         #[serde(with = "hex_bytes")]
         mr: Vec<u8>,
     },
+    Tpm {
+        key: String,
+        #[serde(with = "hex_bytes")]
+        pubkey: Vec<u8>,
+    },
     Kms {
         url: String,
         #[serde(with = "hex_bytes")]
@@ -204,6 +214,7 @@ impl KeyProvider {
         match self {
             KeyProvider::None { .. } => KeyProviderKind::None,
             KeyProvider::Local { .. } => KeyProviderKind::Local,
+            KeyProvider::Tpm { .. } => KeyProviderKind::Tpm,
             KeyProvider::Kms { .. } => KeyProviderKind::Kms,
         }
     }
@@ -212,6 +223,7 @@ impl KeyProvider {
         match self {
             KeyProvider::None { .. } => &[],
             KeyProvider::Local { mr, .. } => mr,
+            KeyProvider::Tpm { pubkey, .. } => pubkey,
             KeyProvider::Kms { pubkey, .. } => pubkey,
         }
     }
