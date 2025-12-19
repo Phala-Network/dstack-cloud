@@ -72,8 +72,7 @@ impl HostApi {
         let (pk, sk) = generate_keypair();
         let mut report_data = [0u8; 64];
         report_data[..PUBLICKEYBYTES].copy_from_slice(pk.as_bytes());
-        let (_, quote) =
-            tdx_attest::get_quote(&report_data, None).context("Failed to get quote")?;
+        let quote = tdx_attest::get_quote(&report_data).context("Failed to get quote")?;
 
         let provision = self
             .client

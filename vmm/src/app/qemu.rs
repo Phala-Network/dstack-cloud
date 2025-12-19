@@ -25,7 +25,7 @@ use dstack_types::{
     shared_filenames::{
         APP_COMPOSE, ENCRYPTED_ENV, HOST_SHARED_DISK_LABEL, INSTANCE_INFO, USER_CONFIG,
     },
-    AppCompose,
+    AppCompose, KeyProviderKind,
 };
 use dstack_vmm_rpc as pb;
 use fs_err as fs;
@@ -428,6 +428,7 @@ impl VmConfig {
         if !shared_dir.exists() {
             fs::create_dir_all(&shared_dir)?;
         }
+        let app_compose = workdir.app_compose().context("Failed to get app compose")?;
         let qemu = &cfg.qemu_path;
         let mut smp = self.manifest.vcpu.max(1);
         let mut mem = self.manifest.memory;
@@ -530,7 +531,23 @@ impl VmConfig {
         command.arg("-netdev").arg(netdev);
         command.arg("-device").arg("virtio-net-pci,netdev=net0");
 
-        self.configure_machine(&mut command, &workdir, cfg)?;
+        self.configure_machine(&mut command, &workdir, cfg, &app_compose)?;
+        self.configure_smbios(&mut command, cfg);
+
+        if matches!(app_compose.key_provider(), KeyProviderKind::Tpm) {
+            let tpm_path = if Path::new("/dev/tpmrm0").exists() {
+                "/dev/tpmrm0"
+            } else if Path::new("/dev/tpm0").exists() {
+                "/dev/tpm0"
+            } else {
+                bail!("TPM key provider requested but no TPM device found on host");
+            };
+            command
+                .arg("-tpmdev")
+                .arg(format!("passthrough,id=tpm0,path={tpm_path}"))
+                .arg("-device")
+                .arg("tpm-tis,tpmdev=tpm0");
+        }
 
         command
             .arg("-device")
@@ -761,6 +778,7 @@ impl VmConfig {
         command: &mut Command,
         workdir: &VmWorkDir,
         cfg: &CvmConfig,
+        app_compose: &AppCompose,
     ) -> Result<()> {
         if self.manifest.no_tee {
             command
@@ -775,8 +793,9 @@ impl VmConfig {
 
         let img_ver = self.image.info.version_tuple().unwrap_or_default();
         let support_mr_config_id = img_ver >= (0, 5, 2);
-        let tdx_object = if cfg.use_mrconfigid && support_mr_config_id {
-            let app_compose = workdir.app_compose().context("Failed to get app compose")?;
+
+        // Compute mrconfigid if needed
+        let mrconfigid = if cfg.use_mrconfigid && support_mr_config_id {
             let compose_hash = workdir
                 .app_compose_hash()
                 .context("Failed to get compose hash")?;
@@ -803,13 +822,93 @@ impl VmConfig {
                     key_provider_id,
                 }
             };
-            let mrconfigid = BASE64_STANDARD.encode(mr_config.to_mr_config_id());
-            format!("tdx-guest,id=tdx,mrconfigid={mrconfigid}")
+            Some(BASE64_STANDARD.encode(mr_config.to_mr_config_id()))
         } else {
-            "tdx-guest,id=tdx".to_string()
+            None
         };
-        command.arg("-object").arg(tdx_object);
+
+        // Build tdx-guest object with optional quote-generation-socket for kernel-level TSM support
+        #[derive(Serialize)]
+        struct QgsSocket {
+            r#type: &'static str,
+            cid: &'static str,
+            port: String,
+        }
+
+        #[derive(Serialize)]
+        struct TdxGuestObject {
+            #[serde(rename = "qom-type")]
+            qom_type: &'static str,
+            id: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            mrconfigid: Option<String>,
+            #[serde(
+                rename = "quote-generation-socket",
+                skip_serializing_if = "Option::is_none"
+            )]
+            quote_generation_socket: Option<QgsSocket>,
+        }
+
+        let tdx_object = TdxGuestObject {
+            qom_type: "tdx-guest",
+            id: "tdx",
+            mrconfigid: mrconfigid.clone(),
+            quote_generation_socket: cfg.qgs_port.map(|port| QgsSocket {
+                r#type: "vsock",
+                cid: "2",
+                port: port.to_string(),
+            }),
+        };
+
+        // Use JSON format when quote-generation-socket is needed, otherwise use simple format
+        let tdx_object_arg =
+            serde_json::to_string(&tdx_object).context("failed to serialize tdx-guest object")?;
+        command.arg("-object").arg(tdx_object_arg);
         Ok(())
+    }
+
+    fn configure_smbios(&self, command: &mut Command, cfg: &CvmConfig) {
+        let p = &cfg.product;
+
+        fn cfg_if(ty: &mut Vec<String>, name: &str, v: &Option<String>) {
+            if let Some(v) = v {
+                ty.push(format!("{name}={v}"));
+            }
+        }
+
+        let mut types = [const { Vec::new() }; 4];
+        // SMBIOS type=0 (BIOS Information)
+        cfg_if(&mut types[0], "vendor", &p.bios_vendor);
+        cfg_if(&mut types[0], "version", &p.bios_version);
+        cfg_if(&mut types[0], "date", &p.bios_date);
+        cfg_if(&mut types[0], "release", &p.bios_release);
+        // SMBIOS type=1 (System Information)
+        cfg_if(&mut types[1], "manufacturer", &p.sys_vendor);
+        cfg_if(&mut types[1], "product", &p.product_name);
+        cfg_if(&mut types[1], "version", &p.product_version);
+        cfg_if(&mut types[1], "serial", &p.product_serial);
+        cfg_if(&mut types[1], "uuid", &p.product_uuid);
+        cfg_if(&mut types[1], "family", &p.product_family);
+        cfg_if(&mut types[1], "sku", &p.product_sku);
+        // SMBIOS type=2 (Baseboard Information)
+        cfg_if(&mut types[2], "manufacturer", &p.board_vendor);
+        cfg_if(&mut types[2], "product", &p.board_name);
+        cfg_if(&mut types[2], "version", &p.board_version);
+        cfg_if(&mut types[2], "serial", &p.board_serial);
+        cfg_if(&mut types[2], "asset", &p.board_asset_tag);
+        // SMBIOS type=3 (Chassis Information)
+        cfg_if(&mut types[3], "manufacturer", &p.chassis_vendor);
+        cfg_if(&mut types[3], "version", &p.chassis_version);
+        cfg_if(&mut types[3], "serial", &p.chassis_serial);
+        cfg_if(&mut types[3], "asset", &p.chassis_asset_tag);
+
+        for (i, t) in types.iter().enumerate() {
+            if !t.is_empty() {
+                command
+                    .arg("-smbios")
+                    .arg(format!("type={i},{}", t.join(",")));
+            }
+        }
     }
 }
 

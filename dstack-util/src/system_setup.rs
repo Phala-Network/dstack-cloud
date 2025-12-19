@@ -54,6 +54,7 @@ use ra_tls::{
 };
 use serde_human_bytes as hex_bytes;
 use serde_json::Value;
+use tpm_attest::{self as tpm, TpmContext};
 
 mod config_id_verifier;
 
@@ -150,12 +151,6 @@ fn parse_dstack_options(shared: &HostShared) -> Result<DstackOptions> {
     Ok(options)
 }
 
-impl InstanceInfo {
-    fn is_initialized(&self) -> bool {
-        !self.instance_id_seed.is_empty()
-    }
-}
-
 #[derive(Clone)]
 pub struct HostShareDir {
     base_dir: PathBuf,
@@ -208,13 +203,16 @@ struct HostShared {
 
 impl HostShared {
     /// Find block device by volume label
+    /// Searches /dev/disk/by-label (standard Linux) and falls back to /sys/block scan (GCP)
     fn find_disk_by_label(label: &str) -> Option<String> {
+        // Try standard /dev/disk/by-label first (works on most Linux systems)
         let label_path = format!("/dev/disk/by-label/{}", label);
         if Path::new(&label_path).exists() {
             return Some(label_path);
         }
 
         // Fallback: scan /sys/block for devices and check their labels with blkid
+        // This works on GCP and other platforms where /dev/disk/by-label may not be populated
         if let Ok(entries) = fs::read_dir("/sys/block") {
             for entry in entries.flatten() {
                 let dev_name = entry.file_name();
@@ -292,12 +290,14 @@ impl HostShared {
             std::io::copy(&mut src_io, &mut dst_io)?;
             Ok(())
         };
+
         cmd! {
             info "Mounting host-shared";
             mkdir -p $host_shared_dir;
         }?;
 
         // Try to detect and mount shared disk by label first, fallback to 9p
+        // This works on GCP, bare-metal TDX, and other platforms
         let disk_device = Self::find_disk_by_label(HOST_SHARED_DISK_LABEL);
         let mounted_via_disk = if let Some(dev) = disk_device {
             info!("Found shared disk at {}", dev);
@@ -323,15 +323,18 @@ impl HostShared {
             mkdir -p $host_shared_copy_dir;
             info "Copying host-shared files";
         }?;
+
         copy(APP_COMPOSE, SZ_1KB * 256, false)?;
         copy(SYS_CONFIG, SZ_1KB * 32, false)?;
         copy(INSTANCE_INFO, SZ_1KB * 10, true)?;
         copy(ENCRYPTED_ENV, SZ_1KB * 256, true)?;
         copy(USER_CONFIG, SZ_1MB, true)?;
+
         cmd! {
             info "Unmounting host-shared";
             umount $host_shared_dir;
         }?;
+
         HostShared::load(host_shared_copy_dir)
     }
 }
@@ -730,12 +733,61 @@ impl<'a> Stage0<'a> {
             .await
             .context("Failed to get sealing key")?;
         // write to fs
-        let app_keys = gen_app_keys_from_seed(&provision.sk, Some(provision.mr.to_vec()))
-            .context("Failed to generate app keys")?;
+        let app_keys = gen_app_keys_from_seed(
+            &provision.sk,
+            KeyProviderKind::Local,
+            Some(provision.mr.to_vec()),
+        )
+        .context("Failed to generate app keys")?;
         Ok(app_keys)
     }
 
-    async fn request_app_keys(&self) -> Result<AppKeys> {
+    fn generate_tpm_app_keys(&self, app_compose_hash: &[u8; 32]) -> Result<AppKeys> {
+        let tpm = TpmContext::detect().context("failed to detect TPM context")?;
+
+        // Get PCR policy for sealing (boot chain + app PCR)
+        let pcr_policy = tpm::dstack_pcr_policy();
+
+        // Extend app PCR with app-compose hash BEFORE unsealing
+        // This ensures the sealed data is bound to this specific app configuration
+        tpm.pcr_extend_sha256(tpm::APP_PCR, app_compose_hash)?;
+
+        // Dump all PCR values (0-15) AFTER extending for debugging
+        let all_pcrs =
+            tpm::PcrSelection::sha256(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        info!("PCR values AFTER extending PCR {}:", tpm::APP_PCR);
+        tpm.dump_pcr_values(&all_pcrs);
+
+        // Try to read sealed seed (bound to PCR values including app PCR)
+        if let Some(seed) = tpm
+            .unseal::<32>(tpm::SEALED_NV_INDEX, tpm::PRIMARY_KEY_HANDLE, &pcr_policy)
+            .context("failed to unseal from TPM")?
+        {
+            info!(
+                "unsealed root key seed from TPM (PCR policy: {})",
+                pcr_policy.to_arg()
+            );
+            return gen_app_keys_from_seed(&seed, KeyProviderKind::Tpm, None)
+                .context("failed to generate TPM app keys");
+        }
+
+        // No sealed seed exists, generate new one
+        info!("no sealed seed found, generating new seed...");
+        let seed: [u8; 32] = tpm.get_random().context("TPM RNG unavailable")?;
+        // Seal the new seed to TPM with PCR policy (including app PCR)
+        tpm.seal(
+            &seed,
+            tpm::SEALED_NV_INDEX,
+            tpm::PRIMARY_KEY_HANDLE,
+            &pcr_policy,
+        )
+        .context("failed to seal seed to TPM")?;
+
+        gen_app_keys_from_seed(&seed, KeyProviderKind::Tpm, None)
+            .context("failed to generate TPM app keys")
+    }
+
+    async fn request_app_keys(&self, app_compose_hash: &[u8; 32]) -> Result<AppKeys> {
         let key_provider = self.shared.app_compose.key_provider();
         match key_provider {
             KeyProviderKind::Kms => self.request_app_keys_from_kms().await,
@@ -743,7 +795,12 @@ impl<'a> Stage0<'a> {
             KeyProviderKind::None => {
                 info!("No key provider is enabled, generating temporary app keys");
                 let seed: [u8; 32] = rand::thread_rng().gen();
-                gen_app_keys_from_seed(&seed, None).context("Failed to generate app keys")
+                gen_app_keys_from_seed(&seed, KeyProviderKind::None, None)
+                    .context("Failed to generate app keys")
+            }
+            KeyProviderKind::Tpm => {
+                info!("Generating app keys from TPM");
+                self.generate_tpm_app_keys(app_compose_hash)
             }
         }
     }
@@ -827,12 +884,66 @@ impl<'a> Stage0<'a> {
         Ok(())
     }
 
-    async fn mount_data_disk(
-        &self,
-        initialized: bool,
-        disk_crypt_key: &str,
-        opts: &DstackOptions,
-    ) -> Result<()> {
+    fn is_disk_initialized(&self, opts: &DstackOptions) -> bool {
+        let device = &self.args.device;
+
+        // For encrypted storage, just check if LUKS header exists
+        // The filesystem check happens after the LUKS device is opened
+        let has_luks = if opts.storage_encrypted {
+            let result = cmd!(cryptsetup isLuks $device).is_ok();
+            if result {
+                info!("LUKS header detected on {}", device.display());
+            }
+            result
+        } else {
+            false
+        };
+
+        // Check if filesystem exists
+        let has_fs = match opts.storage_fs {
+            FsType::Zfs => {
+                // Check if zpool exists by trying to import it in readonly mode
+                if cmd!(zpool import -N -o readonly=on dstack).is_ok() {
+                    cmd!(zpool export dstack).ok();
+                    info!("ZFS pool 'dstack' detected");
+                    true
+                } else {
+                    false
+                }
+            }
+            FsType::Ext4 if !opts.storage_encrypted => {
+                // For unencrypted ext4, check the device directly
+                if cmd!(blkid -s TYPE -o value $device)
+                    .map(|out| out.trim() == "ext4")
+                    .unwrap_or(false)
+                {
+                    info!("ext4 filesystem detected on {}", device.display());
+                    true
+                } else {
+                    false
+                }
+            }
+            FsType::Ext4 => {
+                // For encrypted ext4, we can only check after LUKS is opened
+                // So we rely on LUKS header presence as indicator
+                has_luks
+            }
+        };
+
+        // For encrypted ZFS, need both LUKS header AND zpool to exist
+        let initialized = if opts.storage_encrypted && opts.storage_fs == FsType::Zfs {
+            has_luks && has_fs
+        } else {
+            has_luks || has_fs
+        };
+
+        if !initialized {
+            info!("No existing filesystem detected on {}", device.display());
+        }
+        initialized
+    }
+
+    async fn mount_data_disk(&self, disk_crypt_key: &str, opts: &DstackOptions) -> Result<()> {
         let name = "dstack_data_disk";
         let mount_point = &self.args.mount_point;
 
@@ -845,7 +956,9 @@ impl<'a> Stage0<'a> {
 
         cmd!(mkdir -p $mount_point).context("Failed to create mount point")?;
 
-        if !initialized {
+        let disk_initialized = self.is_disk_initialized(opts);
+
+        if !disk_initialized {
             self.vmm
                 .notify_q("boot.progress", "initializing data disk")
                 .await;
@@ -997,6 +1110,20 @@ impl<'a> Stage0<'a> {
             echo -n $disk_crypt_key | cryptsetup luksOpen --type luks2 --header $in_mem_hdr -d- $root_hd $name;
         }
         .or(Err(anyhow!("Failed to open encrypted data disk")))?;
+
+        // Wait for device mapper to create the device
+        let dm_path = format!("/dev/mapper/{name}");
+        for i in 0..10 {
+            if std::path::Path::new(&dm_path).exists() {
+                info!("Device mapper {} is ready", dm_path);
+                break;
+            }
+            if i == 9 {
+                bail!("Timed out waiting for device mapper {}", dm_path);
+            }
+            info!("Waiting for device mapper {}...", dm_path);
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
         Ok(())
     }
 
@@ -1027,12 +1154,14 @@ impl<'a> Stage0<'a> {
             sha256(&id_path)[..20].to_vec()
         };
         instance_info.instance_id = instance_id.clone();
-        if !kms_enabled && instance_info.app_id != truncated_compose_hash {
-            bail!("App upgrade is not supported without KMS");
-        }
+        let app_id = if kms_enabled {
+            instance_info.app_id.clone()
+        } else {
+            truncated_compose_hash.to_vec()
+        };
 
         extend_rtmr3("system-preparing", &[])?;
-        extend_rtmr3("app-id", &instance_info.app_id)?;
+        extend_rtmr3("app-id", &app_id)?;
         extend_rtmr3("compose-hash", &compose_hash)?;
         extend_rtmr3("instance-id", &instance_id)?;
         extend_rtmr3("boot-mr-done", &[])?;
@@ -1061,6 +1190,9 @@ impl<'a> Stage0<'a> {
             KeyProvider::Local { mr, .. } => {
                 KeyProviderInfo::new("local-sgx".into(), hex::encode(mr))
             }
+            KeyProvider::Tpm { pubkey, .. } => {
+                KeyProviderInfo::new("tpm".into(), hex::encode(pubkey))
+            }
             KeyProvider::Kms { pubkey, .. } => {
                 KeyProviderInfo::new("kms".into(), hex::encode(pubkey))
             }
@@ -1070,7 +1202,6 @@ impl<'a> Stage0<'a> {
     }
 
     async fn setup_fs(self) -> Result<Stage1<'a>> {
-        let is_initialized = self.shared.instance_info.is_initialized();
         let app_info = self
             .measure_app_info()
             .context("Failed to measure app info")?;
@@ -1080,7 +1211,7 @@ impl<'a> Stage0<'a> {
         self.vmm
             .notify_q("boot.progress", "requesting app keys")
             .await;
-        let app_keys = self.request_app_keys().await?;
+        let app_keys = self.request_app_keys(&app_info.compose_hash).await?;
         if app_keys.disk_crypt_key.is_empty() {
             bail!("Failed to get valid key phrase from KMS");
         }
@@ -1100,12 +1231,8 @@ impl<'a> Stage0<'a> {
             opts.storage_encrypted, opts.storage_fs
         );
 
-        self.mount_data_disk(
-            is_initialized,
-            &hex::encode(&app_keys.disk_crypt_key),
-            &opts,
-        )
-        .await?;
+        self.mount_data_disk(&hex::encode(&app_keys.disk_crypt_key), &opts)
+            .await?;
         self.setup_swap(self.shared.app_compose.swap_size, &opts)
             .await?;
         self.vmm

@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## SSH Access to Test Instances
+
+**IMPORTANT**: Always use direct SSH commands, NOT gcloud compute ssh.
+
+- GCP test instance: `ssh testgcp`
+- DO NOT use: `gcloud compute ssh testgcp --zone=...`
+
+The SSH config is already configured. Just use the hostname directly.
+
 ## Project Overview
 
 dstack is a developer-friendly, security-first framwwork for deploying containerized applications into Intel TDX (Trust Domain Extensions) Trusted Execution Environments (TEEs). The system provides end-to-end security through hardware-rooted attestation, automated key management, and zero-trust networking.

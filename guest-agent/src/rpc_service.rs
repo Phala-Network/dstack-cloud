@@ -12,9 +12,9 @@ use dstack_guest_agent_rpc::{
     tappd_server::{TappdRpc, TappdServer},
     worker_server::{WorkerRpc, WorkerServer},
     AppInfo, DeriveK256KeyResponse, DeriveKeyArgs, EmitEventArgs, GetAttestationForAppKeyRequest,
-    GetKeyArgs, GetKeyResponse, GetQuoteResponse, GetTlsKeyArgs, GetTlsKeyResponse, RawQuoteArgs,
-    SignRequest, SignResponse, TdxQuoteArgs, TdxQuoteResponse, VerifyRequest, VerifyResponse,
-    WorkerVersion,
+    GetAttestationResponse, GetKeyArgs, GetKeyResponse, GetQuoteResponse, GetTlsKeyArgs,
+    GetTlsKeyResponse, RawQuoteArgs, SignRequest, SignResponse, TdxQuoteArgs, TdxQuoteResponse,
+    VerifyRequest, VerifyResponse, WorkerVersion,
 };
 use dstack_types::{AppKeys, SysConfig};
 use ed25519_dalek::ed25519::signature::hazmat::{PrehashSigner, PrehashVerifier};
@@ -38,6 +38,12 @@ use tdx_attest::eventlog::read_event_logs;
 use tracing::error;
 
 use crate::config::Config;
+
+fn read_dmi_file(name: &str) -> String {
+    fs::read_to_string(format!("/sys/class/dmi/id/{name}"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -134,23 +140,17 @@ pub struct InternalRpcHandler {
 
 pub async fn get_info(state: &AppState, external: bool) -> Result<AppInfo> {
     let hide_tcb_info = external && !state.config().app_compose.public_tcbinfo;
-    let response = InternalRpcHandler {
-        state: state.clone(),
-    }
-    .get_quote(RawQuoteArgs {
-        report_data: [0; 64].to_vec(),
-    })
-    .await;
-    let Ok(response) = response else {
-        return Ok(AppInfo::default());
-    };
-    let Ok(attestation) = Attestation::new(response.quote, response.event_log.into()) else {
+    let Ok(attestation) = Attestation::local() else {
         return Ok(AppInfo::default());
     };
     let app_info = attestation
         .decode_app_info(false)
         .context("Failed to decode app info")?;
-    let event_log = &attestation.event_log;
+    let event_log = attestation
+        .tdx_quote
+        .as_ref()
+        .map(|q| &q.event_log[..])
+        .unwrap_or_default();
     let tcb_info = if hide_tcb_info {
         "".to_string()
     } else {
@@ -193,6 +193,8 @@ pub async fn get_info(state: &AppState, external: bool) -> Result<AppInfo> {
             .clone(),
         tcb_info,
         vm_config,
+        cloud_vendor: read_dmi_file("sys_vendor"),
+        cloud_product: read_dmi_file("product_name"),
     })
 }
 
@@ -277,6 +279,7 @@ impl DstackGuestRpc for InternalRpcHandler {
             Some(padded)
         }
         let report_data = pad64(&request.report_data).context("Report data is too long")?;
+
         if self.state.config().simulator.enabled {
             return simulate_quote(
                 self.state.config(),
@@ -284,15 +287,12 @@ impl DstackGuestRpc for InternalRpcHandler {
                 &self.state.inner.vm_config,
             );
         }
-        let (_, quote) =
-            tdx_attest::get_quote(&report_data, None).context("Failed to get quote")?;
-        let event_log = read_event_logs().context("Failed to decode event log")?;
-        let event_log =
-            serde_json::to_string(&event_log).context("Failed to serialize event log")?;
-
+        let attestation = Attestation::quote(&report_data).context("Failed to get quote")?;
+        let tdx_quote = attestation.get_tdx_quote_bytes();
+        let tdx_event_log = attestation.get_tdx_event_log_string();
         Ok(GetQuoteResponse {
-            quote,
-            event_log,
+            quote: tdx_quote.unwrap_or_default(),
+            event_log: tdx_event_log.unwrap_or_default(),
             report_data: report_data.to_vec(),
             vm_config: self.state.inner.vm_config.clone(),
         })
@@ -393,6 +393,11 @@ impl DstackGuestRpc for InternalRpcHandler {
             _ => return Err(anyhow::anyhow!("Unsupported algorithm")),
         };
         Ok(VerifyResponse { valid })
+    }
+
+    async fn get_attestation(self, request: RawQuoteArgs) -> Result<GetAttestationResponse> {
+        let todo = "implement it";
+        todo!()
     }
 }
 
@@ -510,8 +515,7 @@ impl TappdRpc for InternalRpcHandlerV0 {
         let event_log = read_event_logs().context("Failed to decode event log")?;
         let event_log =
             serde_json::to_string(&event_log).context("Failed to serialize event log")?;
-        let (_, quote) =
-            tdx_attest::get_quote(&report_data, None).context("Failed to get quote")?;
+        let quote = tdx_attest::get_quote(&report_data).context("Failed to get quote")?;
         Ok(TdxQuoteResponse {
             quote,
             event_log,
@@ -603,9 +607,8 @@ impl WorkerRpc for ExternalRpcHandler {
                         &self.state.inner.vm_config,
                     )?)
                 } else {
-                    let ed25519_quote = tdx_attest::get_quote(&ed25519_report_data, None)
-                        .context("Failed to get ed25519 quote")?
-                        .1;
+                    let ed25519_quote = tdx_attest::get_quote(&ed25519_report_data)
+                        .context("Failed to get ed25519 quote")?;
                     let event_log = serde_json::to_string(
                         &read_event_logs().context("Failed to read event log")?,
                     )?;
@@ -635,9 +638,8 @@ impl WorkerRpc for ExternalRpcHandler {
                         &self.state.inner.vm_config,
                     )?)
                 } else {
-                    let secp256k1_quote = tdx_attest::get_quote(&secp256k1_report_data, None)
-                        .context("Failed to get secp256k1 quote")?
-                        .1;
+                    let secp256k1_quote = tdx_attest::get_quote(&secp256k1_report_data)
+                        .context("Failed to get secp256k1 quote")?;
                     let event_log = serde_json::to_string(
                         &read_event_logs().context("Failed to read event log")?,
                     )?;

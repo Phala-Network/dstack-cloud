@@ -4,17 +4,23 @@
 
 use crate::codecs::VecOf;
 use anyhow::{Context, Result};
-use scale::Decode;
+use scale::{Decode, Encode};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use tcg::{TcgDigest, TcgEfiSpecIdEvent};
 
 mod codecs;
 mod tcg;
+pub mod tpm;
 
 /// The path to the userspace TDX event log file.
 pub const RUNTIME_EVENT_LOG_FILE: &str = "/run/log/tdx_mr3/tdx_events.log";
 /// The path to boottime ccel file.
 const CCEL_FILE: &str = "/sys/firmware/acpi/tables/data/CCEL";
+/// The event type for dstack runtime events.
+/// This code is not defined in the TCG specification.
+/// See https://trustedcomputinggroup.org/wp-content/uploads/PC-ClientSpecific_Platform_Profile_for_TPM_2p0_Systems_v51.pdf
+pub const DSTACK_RUNTIME_EVENT_TYPE: u32 = 0x08000001;
 
 /// This is the common struct for tcg event logs to be delivered in different formats.
 /// Currently TCG supports several event log formats defined in TCG_PCClient Spec,
@@ -23,7 +29,7 @@ const CCEL_FILE: &str = "/sys/firmware/acpi/tables/data/CCEL";
 /// according to request.
 #[derive(Clone, scale::Decode)]
 pub struct TcgEventLog {
-    /// IMR index, starts from 1
+    /// IMR index starts from 1
     pub imr_index: u32,
     /// Event type
     pub event_type: u32,
@@ -39,15 +45,15 @@ pub struct TcgEventLog {
 /// which is one-based.
 ///
 /// As for RTMR3, the digest extended is calculated as `sha384(event_type.to_ne_bytes() || b":" || event || b":" || event_payload)`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TdxEventLog {
+#[derive(Clone, Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct TdxEventLogEntry {
     /// IMR index, starts from 0
     pub imr: u32,
     /// Event type
     pub event_type: u32,
     /// Digest
-    #[serde(with = "serde_human_bytes")]
-    pub digest: [u8; 48],
+    #[serde(with = "serde_human_bytes", default)]
+    digest: Vec<u8>,
     /// Event name
     pub event: String,
     /// Event payload
@@ -66,41 +72,59 @@ fn event_digest(ty: u32, event: &str, payload: &[u8]) -> [u8; 48] {
     hasher.finalize().into()
 }
 
-impl TdxEventLog {
+impl TdxEventLogEntry {
     pub fn new(imr: u32, event_type: u32, event: String, event_payload: Vec<u8>) -> Self {
-        let digest = event_digest(event_type, &event, &event_payload);
         Self {
             imr,
             event_type,
-            digest,
+            digest: vec![],
             event,
             event_payload,
         }
     }
 
-    pub fn new_str(imr: u32, event_type: u32, event: &str, event_payload: &str) -> Self {
-        Self::new(
-            imr,
-            event_type,
-            event.to_string(),
-            event_payload.as_bytes().to_vec(),
-        )
+    /// Create a version of this event with payload stripped (for size reduction).
+    /// Only call this on events where can_strip_payload() returns true.
+    pub fn stripped(&self) -> Self {
+        if self.is_dstack_runtime_event() {
+            Self {
+                imr: self.imr,
+                event_type: self.event_type,
+                digest: Vec::new(),
+                event: self.event.clone(),
+                event_payload: self.event_payload.clone(),
+            }
+        } else {
+            Self {
+                imr: self.imr,
+                event_type: self.event_type,
+                digest: self.digest.clone(),
+                event: self.event.clone(),
+                event_payload: Vec::new(),
+            }
+        }
     }
 
-    pub fn validate(&self) -> Result<()> {
-        if self.imr != 3 {
-            // TODO: validate other imrs
-            return Ok(());
+    pub fn digest(&self) -> Vec<u8> {
+        if self.is_dstack_runtime_event() {
+            return event_digest(self.event_type, &self.event, &self.event_payload).to_vec();
         }
-        let digest = event_digest(self.event_type, &self.event, &self.event_payload);
-        if digest != self.digest {
-            return Err(anyhow::anyhow!("invalid digest"));
-        }
-        Ok(())
+        self.digest.clone()
+    }
+
+    pub fn is_dstack_runtime_event(&self) -> bool {
+        self.event_type == DSTACK_RUNTIME_EVENT_TYPE
     }
 }
 
-impl TryFrom<TcgEventLog> for TdxEventLog {
+/// Strip large payloads from event logs to reduce size.
+/// CCEL boot-time events only need their digest for RTMR replay, not the payload.
+/// Runtime events need their payload for verification, so those are kept.
+pub fn strip_event_log_payloads(events: &[TdxEventLogEntry]) -> Vec<TdxEventLogEntry> {
+    events.iter().map(|e| e.stripped()).collect()
+}
+
+impl TryFrom<TcgEventLog> for TdxEventLogEntry {
     type Error = anyhow::Error;
 
     fn try_from(value: TcgEventLog) -> Result<Self> {
@@ -116,15 +140,12 @@ impl TryFrom<TcgEventLog> for TdxEventLog {
             .into_iter()
             .next()
             .context("digest not found")?
-            .hash
-            .try_into()
-            .ok()
-            .context("invalid digest size")?;
-        Ok(TdxEventLog {
+            .hash;
+        Ok(TdxEventLogEntry {
             imr: value
                 .imr_index
                 .checked_sub(1)
-                .context("invalid imr index")?,
+                .context("invalid IMR index: must be >= 1")?,
             event_type: value.event_type,
             digest,
             event: Default::default(),
@@ -210,18 +231,12 @@ impl EventLogs {
         Self::decode(&mut data.as_slice())
     }
 
-    pub fn into_tdx_event_logs(self) -> Result<Vec<TdxEventLog>> {
-        self.event_logs
-            .into_iter()
-            .map(TdxEventLog::try_from)
-            .collect()
-    }
-
-    pub fn to_tdx_event_logs(&self) -> Result<Vec<TdxEventLog>> {
+    pub fn to_tdx_event_logs(&self) -> Result<Vec<TdxEventLogEntry>> {
         self.event_logs
             .iter()
+            .filter(|log| log.imr_index > 0) // GCP fills some IMRs starting from 0
             .cloned()
-            .map(TdxEventLog::try_from)
+            .map(TdxEventLogEntry::try_from)
             .collect()
     }
 }
@@ -256,7 +271,8 @@ fn parse_spec_id_event_log<I: scale::Input>(
     Ok((spec_id_header, spec_id_event))
 }
 
-fn read_runtime_event_logs() -> Result<Vec<TdxEventLog>> {
+/// Read runtime event logs from the runtime event log file
+pub fn read_runtime_event_logs() -> Result<Vec<TdxEventLogEntry>> {
     let data = match fs_err::read_to_string(RUNTIME_EVENT_LOG_FILE) {
         Ok(data) => data,
         Err(e) => {
@@ -271,18 +287,43 @@ fn read_runtime_event_logs() -> Result<Vec<TdxEventLog>> {
         if line.trim().is_empty() {
             continue;
         }
-        let event_log =
-            serde_json::from_str::<TdxEventLog>(line).context("Failed to decode user event log")?;
+        let event_log = serde_json::from_str::<TdxEventLogEntry>(line)
+            .context("Failed to decode user event log")?;
         event_logs.push(event_log);
     }
     Ok(event_logs)
 }
 
 /// Read both boottime and runtime event logs.
-pub fn read_event_logs() -> Result<Vec<TdxEventLog>> {
+pub fn read_event_logs() -> Result<Vec<TdxEventLogEntry>> {
     let mut event_logs = EventLogs::decode_from_ccel_file()?.to_tdx_event_logs()?;
     event_logs.extend(read_runtime_event_logs()?);
     Ok(event_logs)
+}
+
+/// Replay event logs
+pub fn replay_event_logs(
+    eventlog: &[TdxEventLogEntry],
+    to_event: Option<&str>,
+    imr: u32,
+) -> Result<[u8; 48]> {
+    let mut mr = [0u8; 48];
+
+    for event in eventlog.iter() {
+        if event.imr == imr {
+            let mut hasher = sha2::Sha384::new();
+            hasher.update(mr);
+            hasher.update(event.digest());
+            mr = hasher.finalize().into();
+        }
+        if let Some(to_event) = to_event {
+            if event.event == to_event {
+                break;
+            }
+        }
+    }
+
+    Ok(mr)
 }
 
 #[cfg(test)]
