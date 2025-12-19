@@ -17,7 +17,7 @@ use sha2::{Digest as _, Sha384};
 use x509_parser::parse_x509_certificate;
 
 use crate::{oids, traits::CertExt};
-use cc_eventlog::TdxEventLog as EventLog;
+use cc_eventlog::TdxEventLogEntry as EventLog;
 use or_panic::ResultOrPanic;
 use serde_human_bytes as hex_bytes;
 
