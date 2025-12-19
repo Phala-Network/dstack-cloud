@@ -286,15 +286,12 @@ impl DstackGuestRpc for InternalRpcHandler {
                 &self.state.inner.vm_config,
             );
         }
-        let (_, quote) =
-            tdx_attest::get_quote(&report_data, None).context("Failed to get quote")?;
-        let event_log = read_event_logs().context("Failed to decode event log")?;
-        let event_log =
-            serde_json::to_string(&event_log).context("Failed to serialize event log")?;
-
+        let attestation = Attestation::quote(&report_data).context("Failed to get quote")?;
+        let tdx_quote = attestation.get_tdx_quote_bytes();
+        let tdx_event_log = attestation.get_tdx_event_log_string();
         Ok(GetQuoteResponse {
-            quote,
-            event_log,
+            quote: tdx_quote.unwrap_or_default(),
+            event_log: tdx_event_log.unwrap_or_default(),
             report_data: report_data.to_vec(),
             vm_config: self.state.inner.vm_config.clone(),
         })
@@ -395,6 +392,11 @@ impl DstackGuestRpc for InternalRpcHandler {
             _ => return Err(anyhow::anyhow!("Unsupported algorithm")),
         };
         Ok(VerifyResponse { valid })
+    }
+
+    async fn get_attestation(self, request: RawQuoteArgs) -> Result<GetAttestationResponse> {
+        let todo = "implement it";
+        todo!()
     }
 }
 
