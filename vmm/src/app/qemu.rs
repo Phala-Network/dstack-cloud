@@ -531,6 +531,7 @@ impl VmConfig {
         command.arg("-device").arg("virtio-net-pci,netdev=net0");
 
         self.configure_machine(&mut command, &workdir, cfg)?;
+        self.configure_smbios(&mut command, cfg);
 
         command
             .arg("-device")
@@ -810,6 +811,50 @@ impl VmConfig {
         };
         command.arg("-object").arg(tdx_object);
         Ok(())
+    }
+
+    fn configure_smbios(&self, command: &mut Command, cfg: &CvmConfig) {
+        let p = &cfg.product;
+
+        fn cfg_if(ty: &mut Vec<String>, name: &str, v: &Option<String>) {
+            if let Some(v) = v {
+                ty.push(format!("{name}={v}"));
+            }
+        }
+
+        let mut types = [const { Vec::new() }; 4];
+        // SMBIOS type=0 (BIOS Information)
+        cfg_if(&mut types[0], "vendor", &p.bios_vendor);
+        cfg_if(&mut types[0], "version", &p.bios_version);
+        cfg_if(&mut types[0], "date", &p.bios_date);
+        cfg_if(&mut types[0], "release", &p.bios_release);
+        // SMBIOS type=1 (System Information)
+        cfg_if(&mut types[1], "manufacturer", &p.sys_vendor);
+        cfg_if(&mut types[1], "product", &p.product_name);
+        cfg_if(&mut types[1], "version", &p.product_version);
+        cfg_if(&mut types[1], "serial", &p.product_serial);
+        cfg_if(&mut types[1], "uuid", &p.product_uuid);
+        cfg_if(&mut types[1], "family", &p.product_family);
+        cfg_if(&mut types[1], "sku", &p.product_sku);
+        // SMBIOS type=2 (Baseboard Information)
+        cfg_if(&mut types[2], "manufacturer", &p.board_vendor);
+        cfg_if(&mut types[2], "product", &p.board_name);
+        cfg_if(&mut types[2], "version", &p.board_version);
+        cfg_if(&mut types[2], "serial", &p.board_serial);
+        cfg_if(&mut types[2], "asset", &p.board_asset_tag);
+        // SMBIOS type=3 (Chassis Information)
+        cfg_if(&mut types[3], "manufacturer", &p.chassis_vendor);
+        cfg_if(&mut types[3], "version", &p.chassis_version);
+        cfg_if(&mut types[3], "serial", &p.chassis_serial);
+        cfg_if(&mut types[3], "asset", &p.chassis_asset_tag);
+
+        for (i, t) in types.iter().enumerate() {
+            if !t.is_empty() {
+                command
+                    .arg("-smbios")
+                    .arg(format!("type={i},{}", t.join(",")));
+            }
+        }
     }
 }
 

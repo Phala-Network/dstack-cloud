@@ -39,6 +39,12 @@ use tracing::error;
 
 use crate::config::Config;
 
+fn read_dmi_file(name: &str) -> String {
+    fs::read_to_string(format!("/sys/class/dmi/id/{name}"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<AppStateInner>,
@@ -193,6 +199,8 @@ pub async fn get_info(state: &AppState, external: bool) -> Result<AppInfo> {
             .clone(),
         tcb_info,
         vm_config,
+        cloud_vendor: read_dmi_file("sys_vendor"),
+        cloud_product: read_dmi_file("product_name"),
     })
 }
 
