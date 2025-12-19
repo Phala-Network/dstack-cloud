@@ -7,7 +7,7 @@ use dstack_types::{mr_config::MrConfig, KeyProviderKind};
 use tracing::info;
 
 fn read_mr_config_id() -> Result<[u8; 48]> {
-    let (_, quote) = tdx_attest::get_quote(&[0u8; 64], None).context("Failed to get quote")?;
+    let quote = tdx_attest::get_quote(&[0u8; 64]).context("Failed to get quote")?;
     let quote = dcap_qvl::quote::Quote::parse(&quote).context("Failed to parse quote")?;
     let configid = quote
         .report
