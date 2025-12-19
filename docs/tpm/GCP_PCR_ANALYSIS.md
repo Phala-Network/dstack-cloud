@@ -140,7 +140,7 @@ For dstack, the UKI (dstack-uki.efi) contains:
 sha256sum dstack-uki.efi
 
 # ✅ CORRECT - Use PE/COFF Authenticode hash
-python3 calculate_pcr.py --build-pcr2 \
+python3 scripts/bin/calculate_pcr.py --build-pcr2 \
     --bootloader dstack-uki.efi \
     --gpt-hash 00b8a357e652623798d1bbd16c375ec90fbed802b4269affa3e78e6eb19386cf
 
@@ -282,7 +282,7 @@ PCR0_EVENT20="df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119" 
 For PCR 2 (UKI):
 ```bash
 # ✅ CORRECT - Use PE/COFF Authenticode hash (NOT simple SHA256!)
-python3 calculate_pcr.py --bootloader build/tmp/deploy/images/*/dstack-uki.efi
+python3 scripts/bin/calculate_pcr.py --bootloader build/tmp/deploy/images/*/dstack-uki.efi
 
 ```
 

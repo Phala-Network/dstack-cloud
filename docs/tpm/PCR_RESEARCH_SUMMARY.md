@@ -50,7 +50,7 @@ PCR 0 can be pre-calculated from known GCP firmware version:
 
 ```bash
 # Using the calculate_pcr.py tool
-./docs/tpm/calculate_pcr.py --build-pcr0 --verbose
+./scripts/bin/calculate_pcr.py --build-pcr0 --verbose
 ```
 
 **Algorithm**:
@@ -81,7 +81,7 @@ PCR 2 can be pre-calculated from UKI binary:
 
 ```bash
 # From UKI binary
-./docs/tpm/calculate_pcr.py --build-pcr2 \
+./scripts/bin/calculate_pcr.py --build-pcr2 \
     --bootloader build/tmp/deploy/images/*/dstack-uki.efi \
     --verbose
 ```
@@ -158,7 +158,7 @@ PCR 8 is defined by TCG spec as "GRUB and other bootloader code". Since dstack b
 
 ### 2. Tools
 
-- **[calculate_pcr.py](calculate_pcr.py)** - PCR calculation tool
+- **[scripts/bin/calculate_pcr.py](../../../scripts/bin/calculate_pcr.py)** - PCR calculation tool
   - Replay Event Log to calculate PCR values
   - Pre-calculate PCR 0 from firmware version
   - Pre-calculate PCR 2 from UKI binary
@@ -167,13 +167,13 @@ PCR 8 is defined by TCG spec as "GRUB and other bootloader code". Since dstack b
 **Usage**:
 ```bash
 # Calculate from Event Log (verification)
-./calculate_pcr.py --eventlog eventlog.yaml --pcr 0,2,4
+./scripts/bin/calculate_pcr.py --eventlog eventlog.yaml --pcr 0,2,4
 
 # Pre-calculate PCR 0
-./calculate_pcr.py --build-pcr0 --verbose
+./scripts/bin/calculate_pcr.py --build-pcr0 --verbose
 
 # Pre-calculate PCR 2 from UKI
-./calculate_pcr.py --build-pcr2 \
+./scripts/bin/calculate_pcr.py --build-pcr2 \
     --bootloader build/tmp/deploy/images/*/dstack-uki.efi \
     --verbose
 ```

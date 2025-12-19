@@ -346,5 +346,5 @@ pub fn load_pcr_policy_from_manifest(manifest_path: &Path) -> Result<PcrPolicy> 
 
 - [GCP PCR Analysis](/home/kvin/sdc/home/meta-dstack/dstack/docs/tpm/GCP_PCR_ANALYSIS.md)
 - [PCR 3-7 Security Analysis](/tmp/pcr3_7_security_analysis.md)
-- [PCR Calculator Tool](/home/kvin/sdc/home/meta-dstack/dstack/docs/tpm/calculate_pcr.py)
+- [PCR Calculator Tool](/home/kvin/sdc/home/meta-dstack/scripts/bin/calculate_pcr.py)
 - [tpm-qvl Implementation](/home/kvin/sdc/home/meta-dstack/dstack/tpm-qvl/)

@@ -46,7 +46,7 @@
   - gce-tcb-verifier 工具使用
   - vTPM vs TDX/SEV-SNP 安全对比
 
-- **[calculate_pcr.py](calculate_pcr.py)** - 🛠️ **PCR 计算工具**
+- **[scripts/bin/calculate_pcr.py](../../../scripts/bin/calculate_pcr.py)** - 🛠️ **PCR 计算工具**
   - 从 Event Log 重放计算 PCR
   - 预计算 PCR 0（固件版本）
   - 预计算 PCR 2（UKI hash）⭐ 用于构建系统
@@ -171,13 +171,13 @@
 ssh testgcp 'tpm2_eventlog /sys/kernel/security/tpm0/binary_bios_measurements 2>/dev/null' > eventlog.yaml
 
 # 2. 计算 PCR 0, 2, 4 值
-./docs/tpm/calculate_pcr.py --eventlog eventlog.yaml --pcr 0,2,4
+./scripts/bin/calculate_pcr.py --eventlog eventlog.yaml --pcr 0,2,4
 
 # 3. 查看详细计算过程
-./docs/tpm/calculate_pcr.py --eventlog eventlog.yaml --pcr 0 --verbose
+./scripts/bin/calculate_pcr.py --eventlog eventlog.yaml --pcr 0 --verbose
 
 # 4. 从 bootloader 哈希计算 PCR 2（用于提前计算）
-./docs/tpm/calculate_pcr.py --build-pcr2 \
+./scripts/bin/calculate_pcr.py --build-pcr2 \
     --bootloader build/tmp/deploy/images/*/grub-efi-bootx64.efi \
     --verbose
 ```
@@ -220,7 +220,7 @@ ssh testgcp 'tpm2_eventlog /sys/kernel/security/tpm0/binary_bios_measurements 2>
 4. 阅读 [CERTIFICATE-PURPOSE-VALIDATION.md](CERTIFICATE-PURPOSE-VALIDATION.md) 了解证书验证
 
 ### 开发者
-1. ⭐ 使用 [calculate_pcr.py](calculate_pcr.py) 计算和验证 PCR 值
+1. ⭐ 使用 [scripts/bin/calculate_pcr.py](../../../scripts/bin/calculate_pcr.py) 计算和验证 PCR 值
 2. 研究验证脚本的实现
 3. 参考Python/Bash代码示例
 4. 根据需求定制验证逻辑
@@ -334,7 +334,7 @@ openssl verify -CAfile root_ca.pem intermediate_ca.pem
 - root_ca_full.txt
 
 ### 脚本 (可执行)
-- ⭐ calculate_pcr.py (NEW - PCR 计算工具)
+- ⭐ scripts/bin/calculate_pcr.py (PCR 计算工具)
 - analyze_tpm_quote.sh
 - verify_quote_eventlog.sh
 - gcp-vtpm-attest-minimal.sh ⭐ 推荐
