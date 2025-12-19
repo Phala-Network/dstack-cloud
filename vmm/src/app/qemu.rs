@@ -22,7 +22,9 @@ use base64::prelude::*;
 use bon::Builder;
 use dstack_types::{
     mr_config::MrConfig,
-    shared_filenames::{APP_COMPOSE, ENCRYPTED_ENV, INSTANCE_INFO, USER_CONFIG},
+    shared_filenames::{
+        APP_COMPOSE, ENCRYPTED_ENV, HOST_SHARED_DISK_LABEL, INSTANCE_INFO, USER_CONFIG,
+    },
     AppCompose,
 };
 use dstack_vmm_rpc as pb;
@@ -90,6 +92,70 @@ fn create_hd(
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    Ok(())
+}
+
+/// Create a FAT32 disk image from a directory using pure Rust (no external commands)
+fn create_shared_disk(disk_path: impl AsRef<Path>, shared_dir: impl AsRef<Path>) -> Result<()> {
+    use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
+    use std::io::{Cursor, Seek, SeekFrom, Write};
+
+    let disk_path = disk_path.as_ref();
+    let shared_dir = shared_dir.as_ref();
+
+    const DISK_SIZE: usize = 8 * 1024 * 1024;
+    let mut disk_data = vec![0u8; DISK_SIZE];
+
+    {
+        let cursor = Cursor::new(&mut disk_data);
+        let mut label_bytes = [b' '; 11];
+        let label_str = HOST_SHARED_DISK_LABEL.as_bytes();
+        let copy_len = label_str.len().min(11);
+        label_bytes[..copy_len].copy_from_slice(&label_str[..copy_len]);
+        let format_opts = FormatVolumeOptions::new()
+            .fat_type(fatfs::FatType::Fat32)
+            .volume_label(label_bytes);
+        fatfs::format_volume(cursor, format_opts).context("Failed to format disk as FAT32")?;
+    }
+
+    // Open the formatted filesystem in memory and copy files
+    {
+        let mut cursor = Cursor::new(&mut disk_data);
+        cursor
+            .seek(SeekFrom::Start(0))
+            .context("Failed to seek to start")?;
+        let fs =
+            FileSystem::new(cursor, FsOptions::new()).context("Failed to open FAT32 filesystem")?;
+        let root_dir = fs.root_dir();
+
+        // Copy all files from shared_dir to the FAT32 root
+        for entry in fs::read_dir(shared_dir).context("Failed to read shared directory")? {
+            let entry = entry.context("Failed to read directory entry")?;
+            let path = entry.path();
+
+            if path.is_file() {
+                let filename = entry.file_name();
+                let filename_str = filename.to_string_lossy();
+
+                // Read source file
+                let content = fs::read(&path)
+                    .with_context(|| format!("Failed to read file {}", path.display()))?;
+
+                // Write to FAT32 filesystem
+                let mut fat_file = root_dir
+                    .create_file(&filename_str)
+                    .with_context(|| format!("Failed to create file {filename_str} in FAT32"))?;
+                fat_file
+                    .write_all(&content)
+                    .with_context(|| format!("Failed to write file {filename_str} to FAT32"))?;
+                fat_file.flush().context("Failed to flush FAT32 file")?;
+            }
+        }
+    }
+
+    fs::write(disk_path, &disk_data)
+        .with_context(|| format!("Failed to write disk image to {}", disk_path.display()))?;
+
     Ok(())
 }
 
@@ -470,15 +536,52 @@ impl VmConfig {
             .arg("-device")
             .arg(format!("vhost-vsock-pci,guest-cid={}", self.cid));
 
-        let ro = if self.image.info.shared_ro {
-            "on"
-        } else {
-            "off"
-        };
-        command.arg("-virtfs").arg(format!(
-            "local,path={},mount_tag=host-shared,readonly={ro},security_model=mapped,id=virtfs0",
-            shared_dir.display(),
-        ));
+        // Configure shared files delivery: either via disk or 9p
+        match cfg.host_share_mode.as_str() {
+            "9p" => {
+                // Use 9p virtfs (default)
+                let ro = if self.image.info.shared_ro {
+                    "on"
+                } else {
+                    "off"
+                };
+                command.arg("-virtfs").arg(format!(
+                    "local,path={},mount_tag=host-shared,readonly={ro},security_model=mapped,id=virtfs0",
+                    shared_dir.display(),
+                ));
+            }
+            "vvfat" => {
+                command
+                    .arg("-blockdev")
+                    .arg(format!(
+                        "driver=vvfat,node-name=vvfat0,read-only=on,dir={},label={}",
+                        shared_dir.display(),
+                        HOST_SHARED_DISK_LABEL
+                    ))
+                    .arg("-device")
+                    .arg("virtio-blk-pci,drive=vvfat0");
+            }
+            "vhd" => {
+                // Use a second virtual disk (hd2) to share files
+                let shared_disk_path = workdir.shared_disk_path();
+                if shared_disk_path.exists() {
+                    fs::remove_file(&shared_disk_path).context("Failed to remove shared disk")?;
+                }
+                create_shared_disk(&shared_disk_path, &shared_dir)
+                    .context("Failed to create shared disk")?;
+                command
+                    .arg("-drive")
+                    .arg(format!(
+                        "file={},if=none,id=hd2,format=raw,readonly=on",
+                        shared_disk_path.display()
+                    ))
+                    .arg("-device")
+                    .arg("virtio-blk-pci,drive=hd2");
+            }
+            _ => {
+                bail!("Invalid host sharing mode: {}", cfg.host_share_mode);
+            }
+        }
 
         let hugepages = self.manifest.hugepages;
         let pin_numa = self.manifest.pin_numa;
@@ -876,6 +979,10 @@ impl VmWorkDir {
 
     pub fn hda_path(&self) -> PathBuf {
         self.workdir.join("hda.img")
+    }
+
+    pub fn shared_disk_path(&self) -> PathBuf {
+        self.workdir.join("shared.img")
     }
 
     pub fn qmp_socket(&self) -> PathBuf {

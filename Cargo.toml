@@ -127,6 +127,8 @@ yasna = "0.5.2"
 bytes = "1.10.1"
 figment = "0.10.19"
 object = "0.36.4"
+fatfs = "0.3.6"
+fscommon = "0.1.1"
 
 # Networking/HTTP
 bollard = "0.18.1"
