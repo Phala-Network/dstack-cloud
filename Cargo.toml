@@ -86,6 +86,7 @@ lspci = { path = "lspci" }
 sodiumbox = { path = "sodiumbox" }
 serde-duration = { path = "serde-duration" }
 dstack-mr = { path = "dstack-mr" }
+dstack-verifier = { path = "verifier", default-features = false }
 size-parser = { path = "size-parser" }
 
 # Core dependencies
@@ -227,6 +228,7 @@ yaml-rust2 = "0.10.4"
 
 luks2 = "0.5.0"
 scopeguard = "1.2.0"
+flate2 = "1.1"
 
 [profile.release]
 panic = "abort"

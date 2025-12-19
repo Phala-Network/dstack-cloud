@@ -12,9 +12,9 @@ use dstack_guest_agent_rpc::{
     tappd_server::{TappdRpc, TappdServer},
     worker_server::{WorkerRpc, WorkerServer},
     AppInfo, DeriveK256KeyResponse, DeriveKeyArgs, EmitEventArgs, GetAttestationForAppKeyRequest,
-    GetKeyArgs, GetKeyResponse, GetQuoteResponse, GetTlsKeyArgs, GetTlsKeyResponse, RawQuoteArgs,
-    SignRequest, SignResponse, TdxQuoteArgs, TdxQuoteResponse, VerifyRequest, VerifyResponse,
-    WorkerVersion,
+    GetAttestationResponse, GetKeyArgs, GetKeyResponse, GetQuoteResponse, GetTlsKeyArgs,
+    GetTlsKeyResponse, RawQuoteArgs, SignRequest, SignResponse, TdxQuoteArgs, TdxQuoteResponse,
+    VerifyRequest, VerifyResponse, WorkerVersion,
 };
 use dstack_types::{AppKeys, SysConfig};
 use ed25519_dalek::ed25519::signature::hazmat::{PrehashSigner, PrehashVerifier};
@@ -140,23 +140,17 @@ pub struct InternalRpcHandler {
 
 pub async fn get_info(state: &AppState, external: bool) -> Result<AppInfo> {
     let hide_tcb_info = external && !state.config().app_compose.public_tcbinfo;
-    let response = InternalRpcHandler {
-        state: state.clone(),
-    }
-    .get_quote(RawQuoteArgs {
-        report_data: [0; 64].to_vec(),
-    })
-    .await;
-    let Ok(response) = response else {
-        return Ok(AppInfo::default());
-    };
-    let Ok(attestation) = Attestation::new(response.quote, response.event_log.into()) else {
+    let Ok(attestation) = Attestation::local() else {
         return Ok(AppInfo::default());
     };
     let app_info = attestation
         .decode_app_info(false)
         .context("Failed to decode app info")?;
-    let event_log = &attestation.event_log;
+    let event_log = attestation
+        .tdx_quote
+        .as_ref()
+        .map(|q| &q.event_log[..])
+        .unwrap_or_default();
     let tcb_info = if hide_tcb_info {
         "".to_string()
     } else {
