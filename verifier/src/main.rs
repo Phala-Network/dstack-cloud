@@ -6,6 +6,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use dstack_verifier::{
+    CvmVerifier, VerificationDetails, VerificationRequest, VerificationResponse,
+};
 use figment::{
     providers::{Env, Format, Toml},
     Figment,
@@ -13,12 +16,6 @@ use figment::{
 use rocket::{fairing::AdHoc, get, post, serde::json::Json, State};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
-
-mod types;
-mod verification;
-
-use types::{VerificationRequest, VerificationResponse};
-use verification::CvmVerifier;
 
 #[derive(Parser)]
 #[command(name = "dstack-verifier")]
@@ -53,7 +50,7 @@ async fn verify_cvm(
             error!("Verification failed: {:?}", e);
             Json(VerificationResponse {
                 is_valid: false,
-                details: types::VerificationDetails {
+                details: VerificationDetails {
                     quote_verified: false,
                     event_log_verified: false,
                     os_image_hash_verified: false,
@@ -183,14 +180,10 @@ async fn main() -> Result<()> {
 
     // Check for oneshot mode
     if let Some(file_path) = cli.verify {
-        // Run oneshot verification and exit
-        let rt = tokio::runtime::Runtime::new().context("Failed to create runtime")?;
-        rt.block_on(async {
-            if let Err(e) = run_oneshot(&file_path, &config).await {
-                error!("Oneshot verification failed: {:#}", e);
-                std::process::exit(1);
-            }
-        });
+        if let Err(e) = run_oneshot(&file_path, &config).await {
+            error!("Oneshot verification failed: {:#}", e);
+            std::process::exit(1);
+        }
         std::process::exit(0);
     }
 

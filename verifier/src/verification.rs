@@ -9,12 +9,14 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use cc_eventlog::TdxEventLog as EventLog;
+use cc_eventlog::TdxEventLogEntry as EventLog;
 use dstack_mr::{RtmrLog, TdxMeasurementDetails, TdxMeasurements};
 use dstack_types::VmConfig;
-use ra_tls::attestation::{Attestation, VerifiedAttestation};
+use ra_tls::attestation::{
+    Attestation, AttestationMode, TdxQuote, TpmQuote, VerifiedAttestation, VersionedAttestation,
+};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256, Sha384};
+use sha2::{Digest as _, Sha256};
 use tokio::{io::AsyncWriteExt, process::Command};
 use tracing::{debug, info, warn};
 
@@ -22,38 +24,6 @@ use crate::types::{
     AcpiTables, RtmrEventEntry, RtmrEventStatus, RtmrMismatch, VerificationDetails,
     VerificationRequest, VerificationResponse,
 };
-
-#[derive(Debug, Clone)]
-struct RtmrComputationResult {
-    event_indices: [Vec<usize>; 4],
-    rtmrs: [[u8; 48]; 4],
-}
-
-fn replay_event_logs(eventlog: &[EventLog]) -> Result<RtmrComputationResult> {
-    let mut event_indices: [Vec<usize>; 4] = Default::default();
-    let mut rtmrs: [[u8; 48]; 4] = [[0u8; 48]; 4];
-
-    for idx in 0..4 {
-        for (event_idx, event) in eventlog.iter().enumerate() {
-            event
-                .validate()
-                .context("Failed to validate event digest")?;
-
-            if event.imr == idx {
-                event_indices[idx as usize].push(event_idx);
-                let mut hasher = Sha384::new();
-                hasher.update(rtmrs[idx as usize]);
-                hasher.update(event.digest);
-                rtmrs[idx as usize] = hasher.finalize().into();
-            }
-        }
-    }
-
-    Ok(RtmrComputationResult {
-        event_indices,
-        rtmrs,
-    })
-}
 
 fn collect_rtmr_mismatch(
     rtmr_label: &str,
@@ -76,7 +46,7 @@ fn collect_rtmr_mismatch(
                 } else {
                     event.event.clone()
                 };
-                let status = if event.digest == expected_digest.as_slice() {
+                let status = if event.digest() == expected_digest.as_slice() {
                     RtmrEventStatus::Match
                 } else {
                     RtmrEventStatus::Mismatch
@@ -85,7 +55,7 @@ fn collect_rtmr_mismatch(
                     index: idx,
                     event_type: event.event_type,
                     event_name,
-                    actual_digest: hex::encode(event.digest),
+                    actual_digest: hex::encode(event.digest()),
                     expected_digest: Some(hex::encode(expected_digest)),
                     payload_len: event.event_payload.len(),
                     status,
@@ -114,7 +84,7 @@ fn collect_rtmr_mismatch(
                 } else {
                     event.event.clone()
                 },
-                hex::encode(event.digest),
+                hex::encode(event.digest()),
                 event.event_payload.len(),
             ),
             None => (0, "(missing)".to_string(), String::new(), 0),
@@ -154,6 +124,13 @@ const MEASUREMENT_CACHE_VERSION: u32 = 1;
 struct CachedMeasurement {
     version: u32,
     measurements: TdxMeasurements,
+}
+
+struct ImagePaths {
+    fw_path: PathBuf,
+    kernel_path: PathBuf,
+    initrd_path: PathBuf,
+    kernel_cmdline: String,
 }
 
 pub struct CvmVerifier {
@@ -344,17 +321,89 @@ impl CvmVerifier {
         Ok(measurements)
     }
 
+    /// Helper method to ensure image is downloaded and return image paths
+    async fn ensure_image_downloaded(&self, vm_config: &VmConfig) -> Result<ImagePaths> {
+        let hex_os_image_hash = hex::encode(&vm_config.os_image_hash);
+
+        // Get image directory
+        let image_dir = Path::new(&self.image_cache_dir)
+            .join("images")
+            .join(&hex_os_image_hash);
+
+        let metadata_path = image_dir.join("metadata.json");
+        if !metadata_path.exists() {
+            info!("Image {hex_os_image_hash} not found, downloading");
+            tokio::time::timeout(
+                self.download_timeout,
+                self.download_image(&hex_os_image_hash, &image_dir),
+            )
+            .await
+            .context("Download image timeout")?
+            .with_context(|| format!("Failed to download image {hex_os_image_hash}"))?;
+        }
+
+        let image_info =
+            fs_err::read_to_string(metadata_path).context("Failed to read image metadata")?;
+        let image_info: dstack_types::ImageInfo =
+            serde_json::from_str(&image_info).context("Failed to parse image metadata")?;
+
+        let fw_path = image_dir.join(&image_info.bios);
+        let kernel_path = image_dir.join(&image_info.kernel);
+        let initrd_path = image_dir.join(&image_info.initrd);
+        let kernel_cmdline = image_info.cmdline + " initrd=initrd";
+
+        Ok(ImagePaths {
+            fw_path,
+            kernel_path,
+            initrd_path,
+            kernel_cmdline,
+        })
+    }
+
+    /// Compute expected TDX measurements for a given VM configuration.
+    ///
+    /// This method downloads the OS image if needed (using the configured cache),
+    /// then computes the expected MRTD and RTMRs based on the VM configuration.
+    /// Results are cached automatically.
+    pub async fn compute_measurements_for_config(
+        &self,
+        vm_config: &VmConfig,
+    ) -> Result<TdxMeasurements> {
+        let image_paths = self.ensure_image_downloaded(vm_config).await?;
+
+        self.load_or_compute_measurements(
+            vm_config,
+            &image_paths.fw_path,
+            &image_paths.kernel_path,
+            &image_paths.initrd_path,
+            &image_paths.kernel_cmdline,
+        )
+    }
+
     pub async fn verify(&self, request: &VerificationRequest) -> Result<VerificationResponse> {
-        let quote = hex::decode(&request.quote).context("Failed to decode quote hex")?;
-
-        // Event log is always JSON string
-        let event_log = request.event_log.as_bytes().to_vec();
-
-        let attestation = Attestation::new(quote, event_log)
-            .context("Failed to create attestation from quote and event log")?;
-
-        let debug = request.debug.unwrap_or(false);
-
+        let attestation = if let Some(attestation) = &request.attestation {
+            VersionedAttestation::from_scale(attestation).context("Failed to decode attestaion")?
+        } else if let Some(tpm_quote) = &request.quote {
+            let event_log = request
+                .event_log
+                .as_ref()
+                .context("Event log is required")?;
+            let event_log =
+                serde_json::from_str(event_log).context("Failed to decode event log")?;
+            Attestation {
+                mode: AttestationMode::DstackTdx,
+                tdx_quote: Some(TdxQuote {
+                    quote: tpm_quote.to_vec(),
+                    event_log,
+                }),
+                tpm_quote: None,
+                config: "".into(),
+                report: (),
+            }
+            .into_versioned()
+        } else {
+            bail!("Quote is required");
+        };
         let mut details = VerificationDetails {
             quote_verified: false,
             event_log_verified: false,
@@ -367,41 +416,53 @@ impl CvmVerifier {
             rtmr_debug: None,
         };
 
-        let vm_config: VmConfig =
-            serde_json::from_str(&request.vm_config).context("Failed to decode VM config JSON")?;
-
-        // Step 1: Verify the TDX quote using dcap-qvl
-        let verified_attestation = match self.verify_quote(attestation, &request.pccs_url).await {
+        let attestation = attestation.into_inner();
+        let debug = request.debug.unwrap_or(false);
+        let verified = attestation.verify(None, request.pccs_url.as_deref()).await;
+        let verified_attestation = match verified {
             Ok(att) => {
                 details.quote_verified = true;
-                details.tcb_status = Some(att.report.status.clone());
-                details.advisory_ids = att.report.advisory_ids.clone();
-                // Extract and store report_data
-                if let Ok(report_data) = att.decode_report_data() {
-                    details.report_data = Some(hex::encode(report_data));
-                }
+                details.tcb_status = att.report.tdx_report.as_ref().map(|r| r.status.clone());
+                details.advisory_ids = att
+                    .report
+                    .tdx_report
+                    .as_ref()
+                    .map(|r| r.advisory_ids.clone())
+                    .unwrap_or_default();
+                let report_data = att
+                    .report
+                    .ensure_report_data(None)
+                    .context("Failed to decode report data")?;
+                details.report_data = Some(hex::encode(report_data));
                 att
             }
             Err(e) => {
                 return Ok(VerificationResponse {
                     is_valid: false,
                     details,
-                    reason: Some(format!("Quote verification failed: {}", e)),
+                    reason: Some(format!("Quote verification failed: {e:#}")),
                 });
             }
         };
-
         // Step 3: Verify os-image-hash matches using dstack-mr
-        if let Err(e) = self
-            .verify_os_image_hash(&vm_config, &verified_attestation, debug, &mut details)
-            .await
-        {
-            return Ok(VerificationResponse {
-                is_valid: false,
-                details,
-                reason: Some(format!("OS image hash verification failed: {e:#}")),
-            });
-        }
+        let verified = self
+            .verify_os_image_hash(
+                request.vm_config.clone().unwrap_or_default(),
+                &verified_attestation,
+                debug,
+                &mut details,
+            )
+            .await;
+        let vm_config = match verified {
+            Ok(vm_config) => vm_config,
+            Err(e) => {
+                return Ok(VerificationResponse {
+                    is_valid: false,
+                    details,
+                    reason: Some(format!("OS image hash verification failed: {e:#}")),
+                });
+            }
+        };
         details.os_image_hash_verified = true;
         match verified_attestation.decode_app_info(false) {
             Ok(mut info) => {
@@ -425,32 +486,51 @@ impl CvmVerifier {
         })
     }
 
-    async fn verify_quote(
+    pub async fn verify_os_image_hash(
         &self,
-        attestation: Attestation,
-        pccs_url: &Option<String>,
-    ) -> Result<VerifiedAttestation> {
-        // Extract report data from quote
-        let report_data = attestation.decode_report_data()?;
-
-        attestation
-            .verify(&report_data, pccs_url.as_deref())
-            .await
-            .context("Quote verification failed")
+        mut vm_config: String,
+        attestation: &VerifiedAttestation,
+        debug: bool,
+        details: &mut VerificationDetails,
+    ) -> Result<VmConfig> {
+        if vm_config.is_empty() {
+            vm_config = attestation.config.clone()
+        }
+        let vm_config: VmConfig =
+            serde_json::from_str(&vm_config).context("Failed to decode VM config JSON")?;
+        match attestation.mode {
+            AttestationMode::GcpTdx => {
+                let Some(tpm_quote) = &attestation.tpm_quote else {
+                    bail!("No TPM quote");
+                };
+                self.verify_os_image_hash_for_gcp_tdx(&vm_config, tpm_quote)
+                    .await?;
+            }
+            AttestationMode::DstackTdx => {
+                self.verify_os_image_hash_for_dstack_tdx(&vm_config, attestation, debug, details)
+                    .await?;
+            }
+            AttestationMode::DstackNitro => bail!("Nitro not supported"),
+        }
+        Ok(vm_config)
     }
 
-    async fn verify_os_image_hash(
+    async fn verify_os_image_hash_for_dstack_tdx(
         &self,
         vm_config: &VmConfig,
         attestation: &VerifiedAttestation,
         debug: bool,
         details: &mut VerificationDetails,
     ) -> Result<()> {
-        let hex_os_image_hash = hex::encode(&vm_config.os_image_hash);
-
+        let Some(report) = &attestation.report.tdx_report else {
+            bail!("No TDX report");
+        };
+        let Some(tdx_quote) = &attestation.tdx_quote else {
+            bail!("No TDX quote");
+        };
+        let event_log = &tdx_quote.event_log;
         // Get boot info from attestation
-        let report = attestation
-            .report
+        let report = report
             .report
             .as_td10()
             .context("Failed to decode TD report")?;
@@ -463,35 +543,11 @@ impl CvmVerifier {
             rtmr2: report.rt_mr2.to_vec(),
         };
 
-        // Get image directory
-        let image_dir = Path::new(&self.image_cache_dir)
-            .join("images")
-            .join(&hex_os_image_hash);
-
-        let metadata_path = image_dir.join("metadata.json");
-        if !metadata_path.exists() {
-            info!("Image {} not found, downloading", hex_os_image_hash);
-            tokio::time::timeout(
-                self.download_timeout,
-                self.download_image(&hex_os_image_hash, &image_dir),
-            )
-            .await
-            .context("Download image timeout")?
-            .with_context(|| format!("Failed to download image {hex_os_image_hash}"))?;
-        }
-
-        let image_info =
-            fs_err::read_to_string(metadata_path).context("Failed to read image metadata")?;
-        let image_info: dstack_types::ImageInfo =
-            serde_json::from_str(&image_info).context("Failed to parse image metadata")?;
-
-        let fw_path = image_dir.join(&image_info.bios);
-        let kernel_path = image_dir.join(&image_info.kernel);
-        let initrd_path = image_dir.join(&image_info.initrd);
-        let kernel_cmdline = image_info.cmdline + " initrd=initrd";
-
-        // Use dstack-mr to compute expected MRs
+        // Compute expected measurements (reusing the public API)
         let (mrs, expected_logs) = if debug {
+            // For debug mode, we need detailed logs and ACPI tables
+            let image_paths = self.ensure_image_downloaded(vm_config).await?;
+
             let TdxMeasurementDetails {
                 measurements,
                 rtmr_logs,
@@ -499,10 +555,10 @@ impl CvmVerifier {
             } = self
                 .compute_measurement_details(
                     vm_config,
-                    &fw_path,
-                    &kernel_path,
-                    &initrd_path,
-                    &kernel_cmdline,
+                    &image_paths.fw_path,
+                    &image_paths.kernel_path,
+                    &image_paths.initrd_path,
+                    &image_paths.kernel_cmdline,
                 )
                 .context("Failed to compute expected measurements")?;
 
@@ -514,15 +570,11 @@ impl CvmVerifier {
 
             (measurements, Some(rtmr_logs))
         } else {
+            // For non-debug mode, reuse the public API with caching
             (
-                self.load_or_compute_measurements(
-                    vm_config,
-                    &fw_path,
-                    &kernel_path,
-                    &initrd_path,
-                    &kernel_cmdline,
-                )
-                .context("Failed to obtain expected measurements")?,
+                self.compute_measurements_for_config(vm_config)
+                    .await
+                    .context("Failed to compute expected measurements")?,
                 None,
             )
         };
@@ -533,16 +585,6 @@ impl CvmVerifier {
             rtmr1: mrs.rtmr1.clone(),
             rtmr2: mrs.rtmr2.clone(),
         };
-
-        let event_log: Vec<EventLog> = serde_json::from_slice(&attestation.raw_event_log)
-            .context("Failed to parse event log for mismatch analysis")?;
-
-        let computation_result = replay_event_logs(&event_log)
-            .context("Failed to replay event logs for mismatch analysis")?;
-
-        if computation_result.rtmrs[3] != report.rt_mr3 {
-            bail!("RTMR3 mismatch");
-        }
 
         match expected_mrs.assert_eq(&verified_mrs) {
             Ok(()) => Ok(()),
@@ -562,8 +604,8 @@ impl CvmVerifier {
                         &expected_mrs.rtmr0,
                         &verified_mrs.rtmr0,
                         &expected_logs[0],
-                        &computation_result.event_indices[0],
-                        &event_log,
+                        &[],
+                        event_log,
                     ));
                 }
 
@@ -573,8 +615,8 @@ impl CvmVerifier {
                         &expected_mrs.rtmr1,
                         &verified_mrs.rtmr1,
                         &expected_logs[1],
-                        &computation_result.event_indices[1],
-                        &event_log,
+                        &[],
+                        event_log,
                     ));
                 }
 
@@ -584,8 +626,8 @@ impl CvmVerifier {
                         &expected_mrs.rtmr2,
                         &verified_mrs.rtmr2,
                         &expected_logs[2],
-                        &computation_result.event_indices[2],
-                        &event_log,
+                        &[],
+                        event_log,
                     ));
                 }
 
@@ -598,7 +640,65 @@ impl CvmVerifier {
         }
     }
 
-    async fn download_image(&self, hex_os_image_hash: &str, dst_dir: &Path) -> Result<()> {
+    /// Verify GCP TDX image hash using PCR 2 Event Log
+    ///
+    /// For GCP TDX, we verify:
+    /// 1. PCR 0 matches expected GCP OVMF v2 firmware
+    /// 2. UKI hash by extracting Event 28 (3rd event in PCR 2) from TPM Event Log
+    ///
+    /// IMPORTANT: Extracting the 3rd event is GCP OVMF-specific behavior.
+    /// On GCP, PCR 2 events are ordered as:
+    /// [0]=EV_SEPARATOR, [1]=EV_EFI_GPT_EVENT, [2]=UKI (Event 28), [3]=Linux kernel
+    async fn verify_os_image_hash_for_gcp_tdx(
+        &self,
+        vm_config: &VmConfig,
+        tpm_quote: &TpmQuote,
+    ) -> Result<()> {
+        // Verify PCR 0 (GCP OVMF firmware)
+        const EXPECTED_PCR0: &str =
+            "0cca9ec161b09288802e5a112255d21340ed5b797f5fe29cecccfd8f67b9f802";
+
+        let pcr0 = tpm_quote
+            .pcr_values
+            .iter()
+            .find(|p| p.index == 0)
+            .context("PCR 0 not found in TPM quote")?;
+
+        let pcr0_hex = hex::encode(&pcr0.value);
+
+        // Get expected UKI hash from os_image_hash (which should be set to UKI Authenticode hash)
+        let expected_uki_hash = &vm_config.os_image_hash;
+
+        let pcr2_events: Vec<_> = tpm_quote
+            .event_log
+            .iter()
+            .filter(|e| e.pcr_index == 2)
+            .collect();
+        debug!("PCR 2 Event Log contains {} events", pcr2_events.len());
+        // Extract Event 28 (3rd event, 0-indexed as 2)
+        // NOTE: This is GCP OVMF-specific behavior
+        let event_28_digest = {
+            if pcr0_hex != EXPECTED_PCR0 {
+                bail!("PCR 0 mismatch: expected GCP OVMF v2 ({EXPECTED_PCR0}), got {pcr0_hex}");
+            }
+            &pcr2_events.get(2).context("Event 28 not found")?.digest
+        };
+
+        if event_28_digest != expected_uki_hash {
+            bail!(
+                "UKI hash mismatch: expected={}, actual={}",
+                hex::encode(expected_uki_hash),
+                hex::encode(event_28_digest)
+            );
+        }
+        debug!(
+            "✓ UKI hash verified from PCR 2 Event Log (Event 28), digest: {}",
+            hex::encode(event_28_digest)
+        );
+        Ok(())
+    }
+
+    pub async fn download_image(&self, hex_os_image_hash: &str, dst_dir: &Path) -> Result<()> {
         let url = self
             .download_url
             .replace("{OS_IMAGE_HASH}", hex_os_image_hash);
