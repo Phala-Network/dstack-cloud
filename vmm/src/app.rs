@@ -831,6 +831,7 @@ fn make_vm_config(cfg: &Config, manifest: &Manifest, image: &Image) -> dstack_ty
         hugepages: manifest.hugepages,
         num_gpus: gpus.gpus.len() as u32,
         num_nvswitches: gpus.bridges.len() as u32,
+        host_share_mode: cfg.cvm.host_share_mode.clone(),
         hotplug_off: cfg.cvm.qemu_hotplug_off,
         image: Some(manifest.image.clone()),
     }

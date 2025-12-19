@@ -17,7 +17,7 @@ use dstack_kms_rpc as rpc;
 use dstack_types::{
     shared_filenames::{
         APP_COMPOSE, APP_KEYS, DECRYPTED_ENV, DECRYPTED_ENV_JSON, ENCRYPTED_ENV,
-        HOST_SHARED_DIR_NAME, INSTANCE_INFO, SYS_CONFIG, USER_CONFIG,
+        HOST_SHARED_DIR_NAME, HOST_SHARED_DISK_LABEL, INSTANCE_INFO, SYS_CONFIG, USER_CONFIG,
     },
     KeyProvider, KeyProviderInfo,
 };
@@ -207,6 +207,42 @@ struct HostShared {
 }
 
 impl HostShared {
+    /// Find block device by volume label
+    fn find_disk_by_label(label: &str) -> Option<String> {
+        let label_path = format!("/dev/disk/by-label/{}", label);
+        if Path::new(&label_path).exists() {
+            return Some(label_path);
+        }
+
+        // Fallback: scan /sys/block for devices and check their labels with blkid
+        if let Ok(entries) = fs::read_dir("/sys/block") {
+            for entry in entries.flatten() {
+                let dev_name = entry.file_name();
+                let dev_path = format!("/dev/{}", dev_name.to_string_lossy());
+
+                // Use blkid to check the label
+                if let Ok(output) = Command::new("blkid")
+                    .arg("-s")
+                    .arg("LABEL")
+                    .arg("-o")
+                    .arg("value")
+                    .arg(&dev_path)
+                    .output()
+                {
+                    if output.status.success() {
+                        let found_label =
+                            String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if found_label == label {
+                            return Some(dev_path);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     fn load(host_shared_dir: impl Into<HostShareDir>) -> Result<Self> {
         let host_shared_dir = host_shared_dir.into();
         let sys_config = deserialize_json_file(host_shared_dir.sys_config_file())?;
@@ -259,7 +295,31 @@ impl HostShared {
         cmd! {
             info "Mounting host-shared";
             mkdir -p $host_shared_dir;
-            mount -t 9p -o trans=virtio,version=9p2000.L,ro host-shared $host_shared_dir;
+        }?;
+
+        // Try to detect and mount shared disk by label first, fallback to 9p
+        let disk_device = Self::find_disk_by_label(HOST_SHARED_DISK_LABEL);
+        let mounted_via_disk = if let Some(dev) = disk_device {
+            info!("Found shared disk at {}", dev);
+            let mount_result = cmd! {
+                info "Attempting to mount shared disk";
+                mount -o ro $dev $host_shared_dir;
+            };
+            mount_result.is_ok()
+        } else {
+            false
+        };
+
+        if !mounted_via_disk {
+            info!("Shared disk not found, trying 9p virtfs");
+            cmd! {
+                mount -t 9p -o trans=virtio,version=9p2000.L,ro host-shared $host_shared_dir;
+            }?;
+        } else {
+            info!("Successfully mounted shared disk");
+        }
+
+        cmd! {
             mkdir -p $host_shared_copy_dir;
             info "Copying host-shared files";
         }?;

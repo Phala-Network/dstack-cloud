@@ -159,6 +159,10 @@ pub struct VmConfig {
     pub hotplug_off: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// If true, shared files are provided via a second virtual disk (hd2)
+    /// If false (default), shared files are provided via 9p virtfs
+    #[serde(default)]
+    pub host_share_mode: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
