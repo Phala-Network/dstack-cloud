@@ -356,7 +356,18 @@ impl<Key> CertRequest<'_, Key> {
             params.custom_extensions.push(ext);
         }
         if let Some(ver_att) = self.attestation {
-            let VersionedAttestation::V0 { attestation } = ver_att;
+            let mut ver_att = ver_att.clone();
+            let VersionedAttestation::V0 { attestation } = &mut ver_att;
+            if let Some(tdx_quote) = &mut attestation.tdx_quote {
+                let rtmr3_only: Vec<_> = tdx_quote
+                    .event_log
+                    .iter()
+                    .filter(|e| e.imr == 3)
+                    .cloned()
+                    .collect();
+                tdx_quote.event_log = cc_eventlog::strip_event_log_payloads(&rtmr3_only);
+            }
+
             match attestation.mode {
                 AttestationMode::DstackTdx => {
                     // For backward compatibility, we serialize the quote to the classic oids.
@@ -651,8 +662,10 @@ mod tests {
                 mode: AttestationMode::DstackTdx,
                 tdx_quote: None,
                 tpm_quote: None,
+                config: "".into(),
                 report: (),
-            },
+            }
+            .into_versioned(),
         };
 
         let actual = hex::encode(csr.encode());
@@ -680,8 +693,10 @@ mod tests {
                     event_log: vec![],
                 }),
                 tpm_quote: None,
+                config: "".into(),
                 report: (),
-            },
+            }
+            .into_versioned(),
         };
 
         let actual = hex::encode(csr.encode());
