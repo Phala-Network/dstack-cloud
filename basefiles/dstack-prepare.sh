@@ -24,9 +24,6 @@ mount_overlay /etc/docker $OVERLAY_TMP
 mount_overlay /usr/bin $OVERLAY_TMP
 mount_overlay /home/root $OVERLAY_TMP
 
-# Disable the containerd-shim-runc-v2 temporarily to prevent the containers from starting
-# before docker compose removal orphans. It will be enabled in app-compose.sh
-chmod -x /usr/bin/containerd-shim-runc-v2
 
 # Make sure the system time is synchronized
 echo "Syncing system time..."
@@ -53,3 +50,13 @@ if [ $(jq 'has("init_script")' app-compose.json) == true ]; then
     dstack-util notify-host -e "boot.progress" -d "init-script" || true
     source <(jq -r '.init_script' app-compose.json)
 fi
+
+RUNNER=$(jq -r '.runner' app-compose.json)
+case "$RUNNER" in
+docker-compose)
+	if [[ ! -f docker-compose.yaml ]]; then
+		jq -r '.docker_compose_file' app-compose.json >docker-compose.yaml
+	fi
+	dstack-util remove-orphans --no-dockerd -f docker-compose.yaml || true
+	;;
+esac
