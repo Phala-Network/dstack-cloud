@@ -99,7 +99,9 @@ log "Syncing system time..."
 # Let the chronyd correct the system time immediately
 chronyc makestep
 
-modprobe tdx-guest
+if ! [[ -e /dev/tdx_guest ]]; then
+	modprobe tdx-guest
+fi
 
 # Setup dstack system
 log "Preparing dstack system..."
