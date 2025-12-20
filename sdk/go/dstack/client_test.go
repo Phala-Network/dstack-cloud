@@ -96,6 +96,26 @@ func TestGetQuote(t *testing.T) {
 	}
 }
 
+func TestAttest(t *testing.T) {
+	client := dstack.NewDstackClient()
+	resp, err := client.Attest(context.Background(), []byte("test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resp.Attestation) == 0 {
+		t.Error("expected attestation to not be empty")
+	}
+
+	_, err = client.Attest(context.Background(), bytes.Repeat([]byte("a"), 65))
+	if err == nil {
+		t.Fatal("expected error for report data larger than 64 bytes")
+	}
+	if !strings.Contains(err.Error(), "report data is too large") {
+		t.Fatalf("expected error to mention report data size, got: %v", err)
+	}
+}
+
 func TestGetTlsKey(t *testing.T) {
 	client := dstack.NewDstackClient()
 	altNames := []string{"localhost"}
