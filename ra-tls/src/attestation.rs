@@ -270,6 +270,21 @@ impl VersionedAttestation {
             Self::V0 { attestation } => attestation,
         }
     }
+
+    /// Strip data for certificate embedding (e.g. keep RTMR3 event logs only).
+    pub fn into_stripped(mut self) -> Self {
+        let VersionedAttestation::V0 { attestation } = &mut self;
+        if let Some(tdx_quote) = &mut attestation.tdx_quote {
+            let rtmr3_only: Vec<_> = tdx_quote
+                .event_log
+                .iter()
+                .filter(|e| e.imr == 3)
+                .cloned()
+                .collect();
+            tdx_quote.event_log = cc_eventlog::strip_event_log_payloads(&rtmr3_only);
+        }
+        self
+    }
 }
 
 /// Attestation data

@@ -342,58 +342,28 @@ impl<Key> CertRequest<'_, Key> {
             }
         }
         if let Some(app_id) = self.app_id {
-            let content = yasna::construct_der(|writer| {
-                writer.write_bytes(app_id);
-            });
-            let ext = CustomExtension::from_oid_content(PHALA_RATLS_APP_ID, content);
-            params.custom_extensions.push(ext);
+            add_ext(&mut params, PHALA_RATLS_APP_ID, app_id);
         }
-        if let Some(special_usage) = self.special_usage {
-            let content = yasna::construct_der(|writer| {
-                writer.write_bytes(special_usage.as_bytes());
-            });
-            let ext = CustomExtension::from_oid_content(PHALA_RATLS_CERT_USAGE, content);
-            params.custom_extensions.push(ext);
+        if let Some(usage) = self.special_usage {
+            add_ext(&mut params, PHALA_RATLS_CERT_USAGE, usage);
         }
         if let Some(ver_att) = self.attestation {
-            let mut ver_att = ver_att.clone();
-            let VersionedAttestation::V0 { attestation } = &mut ver_att;
-            if let Some(tdx_quote) = &mut attestation.tdx_quote {
-                let rtmr3_only: Vec<_> = tdx_quote
-                    .event_log
-                    .iter()
-                    .filter(|e| e.imr == 3)
-                    .cloned()
-                    .collect();
-                tdx_quote.event_log = cc_eventlog::strip_event_log_payloads(&rtmr3_only);
-            }
-
+            let VersionedAttestation::V0 { attestation } = &ver_att;
             match attestation.mode {
                 AttestationMode::DstackTdx => {
                     // For backward compatibility, we serialize the quote to the classic oids.
                     let Some(tdx_quote) = &attestation.tdx_quote else {
                         bail!("missing tdx quote")
                     };
-                    let content = yasna::construct_der(|writer| {
-                        writer.write_bytes(&tdx_quote.quote);
-                    });
-                    let ext = CustomExtension::from_oid_content(PHALA_RATLS_TDX_QUOTE, content);
-                    params.custom_extensions.push(ext);
                     let event_log = serde_json::to_vec(&tdx_quote.event_log)
                         .context("Failed to serialize event log")?;
-                    let content = yasna::construct_der(|writer| {
-                        writer.write_bytes(&event_log);
-                    });
-                    let ext = CustomExtension::from_oid_content(PHALA_RATLS_EVENT_LOG, content);
-                    params.custom_extensions.push(ext);
+                    add_ext(&mut params, PHALA_RATLS_TDX_QUOTE, &tdx_quote.quote);
+                    add_ext(&mut params, PHALA_RATLS_EVENT_LOG, &event_log);
                 }
                 _ => {
-                    let attestation_bytes = ver_att.to_scale();
-                    let content = yasna::construct_der(|writer| {
-                        writer.write_bytes(&attestation_bytes);
-                    });
-                    let ext = CustomExtension::from_oid_content(PHALA_RATLS_ATTESTATION, content);
-                    params.custom_extensions.push(ext);
+                    // The event logs are too large on GCP TDX to put in the certificate, so we strip them
+                    let attestation_bytes = ver_att.clone().into_stripped().to_scale();
+                    add_ext(&mut params, PHALA_RATLS_ATTESTATION, &attestation_bytes);
                 }
             }
         }
@@ -415,6 +385,15 @@ impl<Key> CertRequest<'_, Key> {
             .into();
         Ok(params)
     }
+}
+
+fn add_ext(params: &mut CertificateParams, oid: &[u64], content: impl AsRef<[u8]>) {
+    let content = yasna::construct_der(|writer| {
+        writer.write_bytes(content.as_ref());
+    });
+    params
+        .custom_extensions
+        .push(CustomExtension::from_oid_content(oid, content));
 }
 
 impl CertRequest<'_, KeyPair> {
