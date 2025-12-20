@@ -14,7 +14,7 @@ use ra_tls::{
 
 pub enum CertRequestClient {
     Local {
-        ca: CaCert,
+        ca: Box<CaCert>,
     },
     Kms {
         client: KmsClient<RaClient>,
@@ -67,6 +67,7 @@ impl CertRequestClient {
             | KeyProvider::Tpm { key, .. } => {
                 let ca = CaCert::new(keys.ca_cert.clone(), key.clone())
                     .context("Failed to create CA")?;
+                let ca = Box::new(ca);
                 Ok(CertRequestClient::Local { ca })
             }
             KeyProvider::Kms {
