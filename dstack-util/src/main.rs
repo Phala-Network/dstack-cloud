@@ -82,6 +82,10 @@ enum Commands {
     Attest(AttestArgs),
     /// Show size breakdown for a versioned attestation file
     AttestInfo(AttestInfoArgs),
+    /// Dump a versioned attestation as JSON
+    AttestJson(AttestJsonArgs),
+    /// Strip attestation for certificate embedding
+    AttestStrip(AttestStripArgs),
 }
 
 #[derive(Parser)]
@@ -304,6 +308,28 @@ struct AttestInfoArgs {
     input: Option<PathBuf>,
 }
 
+#[derive(Parser)]
+struct AttestJsonArgs {
+    /// input file (default: attestation.bin)
+    #[arg(short, long)]
+    input: Option<PathBuf>,
+
+    /// output file (default: stdout)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+struct AttestStripArgs {
+    /// input file (default: attestation.bin)
+    #[arg(short, long)]
+    input: Option<PathBuf>,
+
+    /// output file (default: attestation.strip.bin)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
 fn pad64(data: &[u8]) -> Result<[u8; 64]> {
     if data.len() > 64 {
         anyhow::bail!("report_data must be at most 64 bytes");
@@ -407,6 +433,64 @@ fn cmd_attest_info(args: AttestInfoArgs) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn cmd_attest_json(args: AttestJsonArgs) -> Result<()> {
+    let input = args
+        .input
+        .unwrap_or_else(|| PathBuf::from("attestation.bin"));
+    let data = fs::read(&input).context("Failed to read attestation file")?;
+    let attestation =
+        VersionedAttestation::from_scale(&data).context("Failed to decode attestation")?;
+
+    let json = match attestation {
+        VersionedAttestation::V0 { attestation } => {
+            let mode = serde_json::to_value(attestation.mode)
+                .context("Failed to serialize attestation mode")?;
+            let tdx_quote = match attestation.tdx_quote {
+                Some(tdx) => serde_json::json!({
+                    "quote": hex::encode(tdx.quote),
+                    "event_log": tdx.event_log,
+                }),
+                None => serde_json::Value::Null,
+            };
+            let tpm_quote = match attestation.tpm_quote {
+                Some(tpm) => serde_json::to_value(tpm).context("Failed to serialize TPM quote")?,
+                None => serde_json::Value::Null,
+            };
+
+            serde_json::json!({
+                "version": "V0",
+                "mode": mode,
+                "config": attestation.config,
+                "tdx_quote": tdx_quote,
+                "tpm_quote": tpm_quote,
+            })
+        }
+    };
+
+    let output = serde_json::to_string_pretty(&json).context("Failed to serialize JSON")?;
+    if let Some(path) = args.output {
+        fs::write(&path, output).context("Failed to write JSON output")?;
+    } else {
+        println!("{output}");
+    }
+    Ok(())
+}
+
+fn cmd_attest_strip(args: AttestStripArgs) -> Result<()> {
+    let input = args
+        .input
+        .unwrap_or_else(|| PathBuf::from("attestation.bin"));
+    let data = fs::read(&input).context("Failed to read attestation file")?;
+    let attestation =
+        VersionedAttestation::from_scale(&data).context("Failed to decode attestation")?;
+    let stripped = attestation.into_stripped();
+    let output = args
+        .output
+        .unwrap_or_else(|| PathBuf::from("attestation.strip.bin"));
+    fs::write(&output, stripped.to_scale()).context("Failed to write stripped attestation")?;
     Ok(())
 }
 
@@ -1070,6 +1154,12 @@ async fn main() -> Result<()> {
         }
         Commands::AttestInfo(args) => {
             cmd_attest_info(args)?;
+        }
+        Commands::AttestJson(args) => {
+            cmd_attest_json(args)?;
+        }
+        Commands::AttestStrip(args) => {
+            cmd_attest_strip(args)?;
         }
     }
 
