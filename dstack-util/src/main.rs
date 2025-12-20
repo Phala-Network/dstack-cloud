@@ -78,6 +78,8 @@ enum Commands {
     /// Verify a TPM quote
     TpmVerify(TpmVerifyArgs),
     QuoteReport(QuoteReportArgs),
+    /// Generate a versioned attestation for simulator use
+    Attest(AttestArgs),
 }
 
 #[derive(Parser)]
@@ -278,19 +280,34 @@ struct QuoteReportArgs {
     debug: bool,
 }
 
+#[derive(Parser)]
+struct AttestArgs {
+    /// report data in hex (max 64 bytes)
+    #[arg(long)]
+    report_data: Option<String>,
+
+    /// output file (default: attestation.bin)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    /// hex encode output
+    #[arg(long, default_value_t = false)]
+    hex: bool,
+}
+
+fn pad64(data: &[u8]) -> Result<[u8; 64]> {
+    if data.len() > 64 {
+        anyhow::bail!("report_data must be at most 64 bytes");
+    }
+    let mut out = [0u8; 64];
+    out[..data.len()].copy_from_slice(data);
+    Ok(out)
+}
+
 fn cmd_quote_report(args: QuoteReportArgs) -> Result<()> {
     #[derive(serde::Serialize)]
     struct VerificationRequestJson {
         pub attestation: String,
-    }
-
-    fn pad64(data: &[u8]) -> Result<[u8; 64]> {
-        if data.len() > 64 {
-            anyhow::bail!("report_data must be at most 64 bytes");
-        }
-        let mut out = [0u8; 64];
-        out[..data.len()].copy_from_slice(data);
-        Ok(out)
     }
 
     let report_data = match args.report_data {
@@ -311,6 +328,31 @@ fn cmd_quote_report(args: QuoteReportArgs) -> Result<()> {
     } else {
         println!("{json}");
     }
+    Ok(())
+}
+
+fn cmd_attest(args: AttestArgs) -> Result<()> {
+    let report_data = match args.report_data {
+        Some(hex_data) => {
+            pad64(&hex::decode(hex_data).context("Failed to decode report_data hex")?)?
+        }
+        None => [0u8; 64],
+    };
+    let attestation = Attestation::quote(&report_data).context("Failed to get attestation")?;
+    let attestation = attestation.into_versioned().to_scale();
+
+    if args.hex {
+        let encoded = hex::encode(attestation);
+        if let Some(output) = args.output {
+            fs::write(&output, encoded).context("Failed to write attestation hex")?;
+        } else {
+            println!("{encoded}");
+        }
+        return Ok(());
+    }
+
+    let output = args.output.unwrap_or_else(|| PathBuf::from("attestation.bin"));
+    fs::write(&output, &attestation).context("Failed to write attestation sample")?;
     Ok(())
 }
 
@@ -1003,6 +1045,9 @@ async fn main() -> Result<()> {
         }
         Commands::QuoteReport(args) => {
             cmd_quote_report(args)?;
+        }
+        Commands::Attest(args) => {
+            cmd_attest(args)?;
         }
     }
 
