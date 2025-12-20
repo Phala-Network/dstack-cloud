@@ -6,7 +6,6 @@
 use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
-use sha2::Digest as _;
 use tracing::debug;
 use tss_esapi::{
     handles::{KeyHandle, NvIndexTpmHandle, TpmHandle},

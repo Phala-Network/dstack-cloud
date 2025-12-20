@@ -521,9 +521,6 @@ pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertP
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
     let pubkey = key.public_key_der();
 
-    // Get attestation data (auto-detects mode: TDX, vTPM, or both)
-    let mode = AttestationMode::detect().context("Failed to detect attestation mode")?;
-
     let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
 
     let attestation = Attestation::quote(&report_data)
