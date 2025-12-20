@@ -26,7 +26,7 @@ use k256::ecdsa::SigningKey;
 use or_panic::ResultOrPanic;
 use ra_rpc::{Attestation, CallContext, RpcCall};
 use ra_tls::{
-    attestation::{QuoteContentType, DEFAULT_HASH_ALGORITHM},
+    attestation::{QuoteContentType, VersionedAttestation, DEFAULT_HASH_ALGORITHM},
     cert::CertConfig,
     kdf::{derive_ecdsa_key, derive_ecdsa_key_pair_from_bytes},
 };
@@ -59,8 +59,20 @@ struct AppStateInner {
 }
 
 impl AppStateInner {
+    fn simulator_attestation(&self) -> Result<Option<VersionedAttestation>> {
+        if !self.config.simulator.enabled {
+            return Ok(None);
+        }
+        let attestation_bytes = fs::read(&self.config.simulator.attestation_file)
+            .context("Failed to read simulator attestation file")?;
+        let attestation = VersionedAttestation::from_scale(&attestation_bytes)
+            .context("Failed to decode simulator attestation")?;
+        Ok(Some(attestation))
+    }
+
     async fn request_demo_cert(&self) -> Result<String> {
         let key = KeyPair::generate().context("Failed to generate demo key")?;
+        let attestation_override = self.simulator_attestation()?;
         let demo_cert = self
             .cert_client
             .request_cert(
@@ -73,7 +85,7 @@ impl AppStateInner {
                     usage_client_auth: true,
                     ext_quote: true,
                 },
-                self.config.simulator.enabled,
+                attestation_override,
             )
             .await
             .context("Failed to get app cert")?
@@ -140,8 +152,13 @@ pub struct InternalRpcHandler {
 
 pub async fn get_info(state: &AppState, external: bool) -> Result<AppInfo> {
     let hide_tcb_info = external && !state.config().app_compose.public_tcbinfo;
-    let Ok(attestation) = Attestation::local() else {
-        return Ok(AppInfo::default());
+    let attestation = if let Some(attestation) = state.inner.simulator_attestation()? {
+        attestation.into_inner()
+    } else {
+        let Ok(attestation) = Attestation::local() else {
+            return Ok(AppInfo::default());
+        };
+        attestation
     };
     let app_info = attestation
         .decode_app_info(false)
@@ -214,11 +231,16 @@ impl DstackGuestRpc for InternalRpcHandler {
             usage_client_auth: request.usage_client_auth,
             ext_quote: request.usage_ra_tls,
         };
+        let attestation_override = self
+            .state
+            .inner
+            .simulator_attestation()
+            .context("Failed to load simulator attestation")?;
         let certificate_chain = self
             .state
             .inner
             .cert_client
-            .request_cert(&derived_key, config, self.state.config().simulator.enabled)
+            .request_cert(&derived_key, config, attestation_override)
             .await
             .context("Failed to sign the CSR")?;
         Ok(GetTlsKeyResponse {
@@ -388,12 +410,10 @@ impl DstackGuestRpc for InternalRpcHandler {
 
     async fn attest(self, request: RawQuoteArgs) -> Result<AttestResponse> {
         let report_data = pad64(&request.report_data).context("Report data is too long")?;
-        if self.state.config().simulator.enabled {
-            return simulate_attestation(
-                self.state.config(),
-                report_data,
-                &self.state.inner.vm_config,
-            );
+        if let Some(attestation) = self.state.inner.simulator_attestation()? {
+            return Ok(AttestResponse {
+                attestation: attestation.to_scale(),
+            });
         }
         let attestation = Attestation::quote(&report_data).context("Failed to get attestation")?;
         Ok(AttestResponse {
@@ -409,16 +429,6 @@ fn pad64(data: &[u8]) -> Option<[u8; 64]> {
     let mut padded = [0u8; 64];
     padded[..data.len()].copy_from_slice(data);
     Some(padded)
-}
-
-fn simulate_attestation(
-    config: &Config,
-    report_data: [u8; 64],
-    vm_config: &str,
-) -> Result<AttestResponse> {
-    let attestation =
-        fs::read(&config.simulator.attestation_file).context("Failed to read attestation file")?;
-    Ok(AttestResponse { attestation })
 }
 
 fn simulate_quote(
@@ -478,11 +488,16 @@ impl TappdRpc for InternalRpcHandlerV0 {
             usage_client_auth: request.usage_client_auth,
             ext_quote: request.usage_ra_tls,
         };
+        let attestation_override = self
+            .state
+            .inner
+            .simulator_attestation()
+            .context("Failed to load simulator attestation")?;
         let certificate_chain = self
             .state
             .inner
             .cert_client
-            .request_cert(&derived_key, config, self.state.config().simulator.enabled)
+            .request_cert(&derived_key, config, attestation_override)
             .await
             .context("Failed to sign the CSR")?;
         Ok(GetTlsKeyResponse {

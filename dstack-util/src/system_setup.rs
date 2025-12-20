@@ -407,7 +407,7 @@ impl<'a> GatewayContext<'a> {
         let client_key =
             KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context("Failed to generate key")?;
         let client_certs = cert_client
-            .request_cert(&client_key, config, false)
+            .request_cert(&client_key, config, None)
             .await
             .context("Failed to request cert")?;
         let client_cert = client_certs.join("\n");

@@ -7,7 +7,7 @@ use dstack_kms_rpc::{kms_client::KmsClient, SignCertRequest};
 use dstack_types::{AppKeys, KeyProvider};
 use ra_rpc::client::{RaClient, RaClientConfig};
 use ra_tls::{
-    attestation::QuoteContentType,
+    attestation::{QuoteContentType, VersionedAttestation},
     cert::{generate_ra_cert, CaCert, CertConfig, CertSigningRequestV2, Csr},
     rcgen::KeyPair,
 };
@@ -97,13 +97,16 @@ impl CertRequestClient {
         &self,
         key: &KeyPair,
         config: CertConfig,
-        no_ra: bool,
+        attestation_override: Option<VersionedAttestation>,
     ) -> Result<Vec<String>> {
         let pubkey = key.public_key_der();
         let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
-        let attestation = ra_rpc::Attestation::quote(&report_data)
-            .context("Failed to get quote for cert pubkey")?
-            .into_versioned();
+        let attestation = match attestation_override {
+            Some(attestation) => attestation,
+            None => ra_rpc::Attestation::quote(&report_data)
+                .context("Failed to get quote for cert pubkey")?
+                .into_versioned(),
+        };
 
         let csr = CertSigningRequestV2 {
             confirm: "please sign cert:".to_string(),
