@@ -312,66 +312,31 @@ impl<T> Attestation<T> {
     }
 }
 
-impl<T> Attestation<T> {
-    /// Decode the quote
-    pub fn decode_tdx_quote(&self) -> Result<Quote> {
-        let Some(tdx_quote) = &self.tdx_quote else {
-            bail!("tdx_quote not found");
+pub trait GetPpid {
+    fn get_ppid(&self) -> Vec<u8>;
+}
+
+impl GetPpid for () {
+    fn get_ppid(&self) -> Vec<u8> {
+        Vec::new()
+    }
+}
+
+impl GetPpid for DstackVerifiedReport {
+    fn get_ppid(&self) -> Vec<u8> {
+        let Some(tdx_report) = &self.tdx_report else {
+            return Vec::new();
         };
-        Quote::parse(&tdx_quote.quote)
+        tdx_report.ppid.clone()
     }
+}
 
-    fn find_event(&self, imr: u32, name: &str) -> Result<TdxEvent> {
-        let Some(tdx_quote) = &self.tdx_quote else {
-            bail!("tdx_quote not found");
-        };
-        for event in &tdx_quote.event_log {
-            if event.imr == 3 && event.event == "system-ready" {
-                break;
-            }
-            if event.imr == imr && event.event == name {
-                return Ok(event.clone());
-            }
-        }
-        Err(anyhow!("event {name} not found"))
-    }
-
-    /// Replay event logs
-    pub fn replay_runtime_events<H: Hasher>(&self, to_event: Option<&str>) -> H::Output {
-        cc_eventlog::replay_events::<H>(&self.runtime_events, to_event)
-    }
-
-    fn find_event_payload(&self, event: &str) -> Result<Vec<u8>> {
-        self.find_event(3, event).map(|event| event.event_payload)
-    }
-
-    /// Decode the app-id from the event log
-    pub fn decode_app_id(&self) -> Result<String> {
-        self.find_event(3, "app-id")
-            .map(|event| hex::encode(&event.event_payload))
-    }
-
-    /// Decode the instance-id from the event log
-    pub fn decode_instance_id(&self) -> Result<String> {
-        self.find_event(3, "instance-id")
-            .map(|event| hex::encode(&event.event_payload))
-    }
-
-    /// Decode the upgraded app-id from the event log
-    pub fn decode_compose_hash(&self) -> Result<String> {
-        let event = self.find_event(3, "compose-hash").or_else(|_| {
-            // Old images use this event name
-            self.find_event(3, "upgraded-app-id")
-        })?;
-        Ok(hex::encode(&event.event_payload))
-    }
-
+impl<T: GetPpid> Attestation<T> {
     /// Decode the app info from the event log
     pub fn decode_app_info(&self, boottime_mr: bool) -> Result<AppInfo> {
         let quote = self.decode_tdx_quote()?;
-        let todo = "use ppid as device_id";
         let todo = "trim mrs in AppInfo and BootInfo";
-        let device_id = sha256(quote.header.user_data).to_vec();
+        let device_id = sha256(self.report.get_ppid()).to_vec();
         let td_report = quote.report.as_td10().context("TDX report not found")?;
         let key_provider_info = if boottime_mr {
             vec![]
@@ -429,6 +394,61 @@ impl<T> Attestation<T> {
             mr_aggregated,
             key_provider_info,
         })
+    }
+}
+
+impl<T> Attestation<T> {
+    /// Decode the quote
+    pub fn decode_tdx_quote(&self) -> Result<Quote> {
+        let Some(tdx_quote) = &self.tdx_quote else {
+            bail!("tdx_quote not found");
+        };
+        Quote::parse(&tdx_quote.quote)
+    }
+
+    fn find_event(&self, imr: u32, name: &str) -> Result<TdxEvent> {
+        let Some(tdx_quote) = &self.tdx_quote else {
+            bail!("tdx_quote not found");
+        };
+        for event in &tdx_quote.event_log {
+            if event.imr == 3 && event.event == "system-ready" {
+                break;
+            }
+            if event.imr == imr && event.event == name {
+                return Ok(event.clone());
+            }
+        }
+        Err(anyhow!("event {name} not found"))
+    }
+
+    /// Replay event logs
+    pub fn replay_runtime_events<H: Hasher>(&self, to_event: Option<&str>) -> H::Output {
+        cc_eventlog::replay_events::<H>(&self.runtime_events, to_event)
+    }
+
+    fn find_event_payload(&self, event: &str) -> Result<Vec<u8>> {
+        self.find_event(3, event).map(|event| event.event_payload)
+    }
+
+    /// Decode the app-id from the event log
+    pub fn decode_app_id(&self) -> Result<String> {
+        self.find_event(3, "app-id")
+            .map(|event| hex::encode(&event.event_payload))
+    }
+
+    /// Decode the instance-id from the event log
+    pub fn decode_instance_id(&self) -> Result<String> {
+        self.find_event(3, "instance-id")
+            .map(|event| hex::encode(&event.event_payload))
+    }
+
+    /// Decode the upgraded app-id from the event log
+    pub fn decode_compose_hash(&self) -> Result<String> {
+        let event = self.find_event(3, "compose-hash").or_else(|_| {
+            // Old images use this event name
+            self.find_event(3, "upgraded-app-id")
+        })?;
+        Ok(hex::encode(&event.event_payload))
     }
 
     /// Decode the rootfs hash from the event log
