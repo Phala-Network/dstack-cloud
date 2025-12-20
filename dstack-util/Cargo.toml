@@ -45,6 +45,7 @@ k256 = { workspace = true, features = ["ecdsa"] }
 dstack-types.workspace = true
 rand.workspace = true
 sha3.workspace = true
+dstack-attest.workspace = true
 cert-client.workspace = true
 x509-parser.workspace = true
 yaml-rust2.workspace = true
@@ -55,6 +56,7 @@ luks2.workspace = true
 scopeguard.workspace = true
 tempfile.workspace = true
 ez-hash.workspace = true
+cc-eventlog.workspace = true
 
 [dev-dependencies]
 rand.workspace = true

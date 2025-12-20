@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use dstack_attest::emit_runtime_event;
 use dstack_types::{KeyProvider, KeyProviderKind};
 use fs_err as fs;
 use getrandom::fill as getrandom;
@@ -408,7 +409,7 @@ fn cmd_attest_info(args: AttestInfoArgs) -> Result<()> {
         VersionedAttestation::V0 { attestation } => {
             println!("version: V0");
             println!("mode: {:?}", attestation.mode);
-            println!("config_bytes: {}", attestation.config.as_bytes().len());
+            println!("config_bytes: {}", attestation.config.len());
             match attestation.tdx_quote {
                 Some(tdx) => {
                     let event_log_json = serde_json::to_vec(&tdx.event_log)
@@ -507,7 +508,7 @@ fn cmd_quote() -> Result<()> {
 }
 
 fn cmd_eventlog() -> Result<()> {
-    let event_logs = att::eventlog::read_event_logs().context("Failed to read event logs")?;
+    let event_logs = cc_eventlog::tdx::read_event_log().context("Failed to read event logs")?;
     serde_json::to_writer_pretty(io::stdout(), &event_logs)
         .context("Failed to write event logs")?;
     Ok(())
@@ -515,7 +516,7 @@ fn cmd_eventlog() -> Result<()> {
 
 fn cmd_extend(extend_args: ExtendArgs) -> Result<()> {
     let payload = hex::decode(&extend_args.payload).context("Failed to decode payload")?;
-    att::extend_rtmr3(&extend_args.event, &payload).context("Failed to extend RTMR")
+    emit_runtime_event(&extend_args.event, &payload).context("Failed to extend RTMR")
 }
 
 fn cmd_rand(rand_args: RandArgs) -> Result<()> {
@@ -547,7 +548,7 @@ fn cmd_replay_imr() -> Result<()> {
     println!("=== Event Log Replay: Calculated IMR/RTMR Values ===\n");
 
     // Read and replay event logs
-    let event_logs = att::eventlog::read_event_logs().context("Failed to read event logs")?;
+    let event_logs = att::eventlog::tdx::read_event_log().context("Failed to read event logs")?;
 
     println!("Total events: {}", event_logs.len());
 

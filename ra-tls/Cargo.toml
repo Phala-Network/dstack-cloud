@@ -36,13 +36,12 @@ serde-human-bytes.workspace = true
 flate2.workspace = true
 or-panic.workspace = true
 rand.workspace = true
-tpm-attest = { workspace = true, optional = true }
 tpm-types.workspace = true
 dstack-types.workspace = true
 tpm-qvl.workspace = true
 hex_fmt.workspace = true
 ez-hash.workspace = true
+dstack-attest.workspace = true
 
 [features]
-default = ["quote"]
-quote = ["dep:tpm-attest"]
+quote = ["dstack-attest/quote"]

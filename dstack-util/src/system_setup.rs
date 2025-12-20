@@ -13,6 +13,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+use dstack_attest::emit_runtime_event;
 use dstack_kms_rpc as rpc;
 use dstack_types::{
     shared_filenames::{
@@ -31,7 +32,6 @@ use ra_tls::cert::generate_ra_cert;
 use rand::Rng as _;
 use scopeguard::defer;
 use serde::{Deserialize, Serialize};
-use tdx_attest::extend_rtmr3;
 use tracing::{info, warn};
 
 use crate::{
@@ -507,7 +507,7 @@ fn truncate(s: &[u8], len: usize) -> &[u8] {
 fn emit_key_provider_info(provider_info: &KeyProviderInfo) -> Result<()> {
     info!("Key provider info: {provider_info:?}");
     let provider_info_json = serde_json::to_vec(&provider_info)?;
-    extend_rtmr3("key-provider", &provider_info_json)?;
+    emit_runtime_event("key-provider", &provider_info_json)?;
     Ok(())
 }
 
@@ -639,7 +639,7 @@ impl<'a> Stage0<'a> {
                     let kms_info = att
                         .decode_app_info(false)
                         .context("Failed to decode app_info")?;
-                    extend_rtmr3("mr-kms", &kms_info.mr_aggregated)
+                    emit_runtime_event("mr-kms", &kms_info.mr_aggregated)
                         .context("Failed to extend mr-kms to RTMR3")?;
                 }
                 Ok(())
@@ -656,7 +656,7 @@ impl<'a> Stage0<'a> {
             .await
             .context("Failed to get app key")?;
 
-        extend_rtmr3("os-image-hash", &response.os_image_hash)
+        emit_runtime_event("os-image-hash", &response.os_image_hash)
             .context("Failed to extend os-image-hash to RTMR3")?;
 
         let (_, ca_pem) = x509_parser::pem::parse_x509_pem(tmp_ca.ca_cert.as_bytes())
@@ -734,21 +734,11 @@ impl<'a> Stage0<'a> {
         Ok(app_keys)
     }
 
-    fn generate_tpm_app_keys(&self, app_compose_hash: &[u8; 32]) -> Result<AppKeys> {
+    fn generate_tpm_app_keys(&self) -> Result<AppKeys> {
         let tpm = TpmContext::detect().context("failed to detect TPM context")?;
 
         // Get PCR policy for sealing (boot chain + app PCR)
         let pcr_policy = tpm::dstack_pcr_policy();
-
-        // Extend app PCR with app-compose hash BEFORE unsealing
-        // This ensures the sealed data is bound to this specific app configuration
-        tpm.pcr_extend_sha256(tpm::APP_PCR, app_compose_hash)?;
-
-        // Dump all PCR values (0-15) AFTER extending for debugging
-        let all_pcrs =
-            tpm::PcrSelection::sha256(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
-        info!("PCR values AFTER extending PCR {}:", tpm::APP_PCR);
-        tpm.dump_pcr_values(&all_pcrs);
 
         // Try to read sealed seed (bound to PCR values including app PCR)
         if let Some(seed) = tpm
@@ -779,7 +769,7 @@ impl<'a> Stage0<'a> {
             .context("failed to generate TPM app keys")
     }
 
-    async fn request_app_keys(&self, app_compose_hash: &[u8; 32]) -> Result<AppKeys> {
+    async fn request_app_keys(&self) -> Result<AppKeys> {
         let key_provider = self.shared.app_compose.key_provider();
         match key_provider {
             KeyProviderKind::Kms => self.request_app_keys_from_kms().await,
@@ -792,7 +782,7 @@ impl<'a> Stage0<'a> {
             }
             KeyProviderKind::Tpm => {
                 info!("Generating app keys from TPM");
-                self.generate_tpm_app_keys(app_compose_hash)
+                self.generate_tpm_app_keys()
             }
         }
     }
@@ -1152,11 +1142,11 @@ impl<'a> Stage0<'a> {
             truncated_compose_hash.to_vec()
         };
 
-        extend_rtmr3("system-preparing", &[])?;
-        extend_rtmr3("app-id", &app_id)?;
-        extend_rtmr3("compose-hash", &compose_hash)?;
-        extend_rtmr3("instance-id", &instance_id)?;
-        extend_rtmr3("boot-mr-done", &[])?;
+        emit_runtime_event("system-preparing", &[])?;
+        emit_runtime_event("app-id", &app_id)?;
+        emit_runtime_event("compose-hash", &compose_hash)?;
+        emit_runtime_event("instance-id", &instance_id)?;
+        emit_runtime_event("boot-mr-done", &[])?;
         Ok(AppInfo {
             instance_info,
             compose_hash,
@@ -1203,7 +1193,7 @@ impl<'a> Stage0<'a> {
         self.vmm
             .notify_q("boot.progress", "requesting app keys")
             .await;
-        let app_keys = self.request_app_keys(&app_info.compose_hash).await?;
+        let app_keys = self.request_app_keys().await?;
         if app_keys.disk_crypt_key.is_empty() {
             bail!("Failed to get valid key phrase from KMS");
         }
@@ -1217,7 +1207,7 @@ impl<'a> Stage0<'a> {
 
         // Parse kernel command line options
         let opts = parse_dstack_options(&self.shared).context("Failed to parse kernel cmdline")?;
-        extend_rtmr3("storage-fs", opts.storage_fs.to_string().as_bytes())?;
+        emit_runtime_event("storage-fs", opts.storage_fs.to_string().as_bytes())?;
         info!(
             "Filesystem options: encryption={}, filesystem={:?}",
             opts.storage_encrypted, opts.storage_fs
@@ -1233,7 +1223,7 @@ impl<'a> Stage0<'a> {
                 &serde_json::to_string(&app_info.instance_info)?,
             )
             .await;
-        extend_rtmr3("system-ready", &[])?;
+        emit_runtime_event("system-ready", &[])?;
         self.vmm.notify_q("boot.progress", "data disk ready").await;
 
         if !self.shared.app_compose.key_provider().is_kms() {

@@ -6,7 +6,9 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use cc_eventlog::tdx::read_event_log;
 use cert_client::CertRequestClient;
+use dstack_attest::emit_runtime_event;
 use dstack_guest_agent_rpc::{
     dstack_guest_server::{DstackGuestRpc, DstackGuestServer},
     tappd_server::{TappdRpc, TappdServer},
@@ -34,7 +36,6 @@ use rcgen::KeyPair;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::json;
 use sha3::{Digest, Keccak256};
-use tdx_attest::eventlog::read_event_logs;
 use tracing::error;
 
 use crate::config::Config;
@@ -315,7 +316,7 @@ impl DstackGuestRpc for InternalRpcHandler {
         if self.state.config().simulator.enabled {
             return Ok(());
         }
-        tdx_attest::extend_rtmr3(&request.event, &request.payload)
+        emit_runtime_event(&request.event, &request.payload)
     }
 
     async fn info(self) -> Result<AppInfo> {
@@ -547,7 +548,7 @@ impl TappdRpc for InternalRpcHandlerV0 {
                 prefix,
             });
         }
-        let event_log = read_event_logs().context("Failed to decode event log")?;
+        let event_log = read_event_log().context("Failed to decode event log")?;
         let event_log =
             serde_json::to_string(&event_log).context("Failed to serialize event log")?;
         let quote = tdx_attest::get_quote(&report_data).context("Failed to get quote")?;
@@ -645,7 +646,7 @@ impl WorkerRpc for ExternalRpcHandler {
                     let ed25519_quote = tdx_attest::get_quote(&ed25519_report_data)
                         .context("Failed to get ed25519 quote")?;
                     let event_log = serde_json::to_string(
-                        &read_event_logs().context("Failed to read event log")?,
+                        &read_event_log().context("Failed to read event log")?,
                     )?;
                     Ok(GetQuoteResponse {
                         quote: ed25519_quote,
@@ -676,7 +677,7 @@ impl WorkerRpc for ExternalRpcHandler {
                     let secp256k1_quote = tdx_attest::get_quote(&secp256k1_report_data)
                         .context("Failed to get secp256k1 quote")?;
                     let event_log = serde_json::to_string(
-                        &read_event_logs().context("Failed to read event log")?,
+                        &read_event_log().context("Failed to read event log")?,
                     )?;
 
                     Ok(GetQuoteResponse {

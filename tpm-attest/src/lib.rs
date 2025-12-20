@@ -28,7 +28,7 @@ pub const SEALED_NV_INDEX: u32 = 0x01801101;
 /// 0: The firmware version and NonHostInfo (representing the memory encryption technology)
 /// 2: The uki image (kernel + initrd + initramfs)
 /// 14: The app compose hash
-pub const APP_PCR: u32 = 14;
+const APP_PCR: u32 = 14;
 pub fn dstack_pcr_policy() -> PcrSelection {
     PcrSelection::sha256(&[0, 2, APP_PCR])
 }

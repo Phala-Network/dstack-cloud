@@ -9,11 +9,11 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use cc_eventlog::TdxEventLogEntry as EventLog;
+use cc_eventlog::TdxEvent;
 use dstack_mr::{RtmrLog, TdxMeasurementDetails, TdxMeasurements};
 use dstack_types::VmConfig;
 use ra_tls::attestation::{
-    Attestation, AttestationMode, TdxQuote, TpmQuote, VerifiedAttestation, VersionedAttestation,
+    Attestation, AttestationMode, TpmQuote, VerifiedAttestation, VersionedAttestation,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -31,7 +31,7 @@ fn collect_rtmr_mismatch(
     actual: &[u8],
     expected_sequence: &RtmrLog,
     actual_indices: &[usize],
-    event_log: &[EventLog],
+    event_log: &[TdxEvent],
 ) -> RtmrMismatch {
     let expected_hex = hex::encode(expected);
     let actual_hex = hex::encode(actual);
@@ -380,27 +380,17 @@ impl CvmVerifier {
         )
     }
 
-    pub async fn verify(&self, request: &VerificationRequest) -> Result<VerificationResponse> {
+    pub async fn verify(&self, request: VerificationRequest) -> Result<VerificationResponse> {
         let attestation = if let Some(attestation) = &request.attestation {
             VersionedAttestation::from_scale(attestation).context("Failed to decode attestaion")?
-        } else if let Some(tpm_quote) = &request.quote {
+        } else if let Some(tdx_quote) = request.quote {
             let event_log = request
                 .event_log
                 .as_ref()
                 .context("Event log is required")?;
-            let event_log =
-                serde_json::from_str(event_log).context("Failed to decode event log")?;
-            Attestation {
-                mode: AttestationMode::DstackTdx,
-                tdx_quote: Some(TdxQuote {
-                    quote: tpm_quote.to_vec(),
-                    event_log,
-                }),
-                tpm_quote: None,
-                config: "".into(),
-                report: (),
-            }
-            .into_versioned()
+            Attestation::from_tdx_quote(tdx_quote, event_log.as_bytes())
+                .context("Failed to create attestation")?
+                .into_versioned()
         } else {
             bail!("Quote is required");
         };

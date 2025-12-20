@@ -23,14 +23,14 @@ use x509_parser::prelude::{FromDer as _, X509Certificate};
 use x509_parser::public_key::PublicKey;
 use x509_parser::x509::SubjectPublicKeyInfo;
 
-use crate::attestation::{
-    Attestation, AttestationMode, QuoteContentType, TdxQuote, VersionedAttestation,
-};
 use crate::oids::{
     PHALA_RATLS_APP_ID, PHALA_RATLS_ATTESTATION, PHALA_RATLS_CERT_USAGE, PHALA_RATLS_EVENT_LOG,
     PHALA_RATLS_TDX_QUOTE,
 };
 use crate::traits::CertExt;
+use dstack_attest::attestation::{
+    Attestation, AttestationMode, QuoteContentType, VersionedAttestation,
+};
 
 /// A CA certificate and private key.
 pub struct CaCert {
@@ -252,19 +252,7 @@ impl TryFrom<CertSigningRequestV1> for CertSigningRequestV2 {
             confirm: v0.confirm,
             pubkey: v0.pubkey,
             config: v0.config,
-            attestation: VersionedAttestation::V0 {
-                attestation: Attestation {
-                    mode: AttestationMode::DstackTdx,
-                    tpm_quote: None,
-                    tdx_quote: Some(TdxQuote {
-                        quote: v0.quote,
-                        event_log: serde_json::from_slice(&v0.event_log)
-                            .context("Failed to parse tdx_event_log")?,
-                    }),
-                    config: "".into(),
-                    report: (),
-                },
-            },
+            attestation: Attestation::from_tdx_quote(v0.quote, &v0.event_log)?.into_versioned(),
         })
     }
 }

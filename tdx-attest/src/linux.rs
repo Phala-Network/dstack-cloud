@@ -2,10 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::{bail, Context};
-use cc_eventlog::TdxEventLogEntry;
-
-use std::io::Write;
+use anyhow::bail;
 use std::path::PathBuf;
 
 use fs_err as fs;
@@ -46,29 +43,6 @@ pub fn get_quote(report_data: &TdxReportData) -> Result<Vec<u8>> {
         log::error!("failed to get quote via configfs: {}", e);
         TdxAttestError::QuoteFailure
     })
-}
-
-pub fn log_rtmr_event(log: &TdxEventLogEntry) -> anyhow::Result<()> {
-    let logline = serde_json::to_string(&log).context("failed to serialize event log")?;
-
-    let logfile_path = std::path::Path::new(cc_eventlog::RUNTIME_EVENT_LOG_FILE);
-    let logfile_dir = logfile_path
-        .parent()
-        .context("failed to get event log directory")?;
-    fs::create_dir_all(logfile_dir).context("failed to create event log directory")?;
-
-    let mut logfile = fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(logfile_path)
-        .context("failed to open event log file")?;
-    logfile
-        .write_all(logline.as_bytes())
-        .context("failed to write to event log file")?;
-    logfile
-        .write_all(b"\n")
-        .context("failed to write to event log file")?;
-    Ok(())
 }
 
 /// Find the TSM measurements sysfs directory

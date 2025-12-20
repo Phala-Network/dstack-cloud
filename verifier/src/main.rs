@@ -44,7 +44,7 @@ async fn verify_cvm(
     verifier: &State<Arc<CvmVerifier>>,
     request: Json<VerificationRequest>,
 ) -> Json<VerificationResponse> {
-    match verifier.verify(&request.into_inner()).await {
+    match verifier.verify(request.into_inner()).await {
         Ok(response) => Json(response),
         Err(e) => {
             error!("Verification failed: {:?}", e);
@@ -100,7 +100,7 @@ async fn run_oneshot(file_path: &str, config: &Config) -> anyhow::Result<()> {
 
     // Run verification
     info!("Starting verification...");
-    let response = verifier.verify(&request).await?;
+    let response = verifier.verify(request).await?;
 
     // Persist response next to the input file for convenience
     let output_path = format!("{file_path}.verification.json");

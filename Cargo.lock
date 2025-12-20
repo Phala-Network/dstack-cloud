@@ -1282,6 +1282,8 @@ name = "cc-eventlog"
 version = "0.5.5"
 dependencies = [
  "anyhow",
+ "digest 0.10.7",
+ "ez-hash",
  "fs-err",
  "hex",
  "insta",
@@ -2136,6 +2138,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "dstack-attest"
+version = "0.5.5"
+dependencies = [
+ "anyhow",
+ "cc-eventlog",
+ "dcap-qvl",
+ "dstack-types",
+ "ez-hash",
+ "fs-err",
+ "hex",
+ "hex_fmt",
+ "or-panic",
+ "parity-scale-codec",
+ "serde",
+ "serde-human-bytes",
+ "serde_json",
+ "sha2 0.10.9",
+ "sha3",
+ "tdx-attest",
+ "tpm-attest",
+ "tpm-qvl",
+ "tpm-types",
+]
+
+[[package]]
 name = "dstack-gateway"
 version = "0.5.5"
 dependencies = [
@@ -2204,11 +2231,13 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "bollard",
+ "cc-eventlog",
  "cert-client",
  "chrono",
  "clap",
  "cmd_lib",
  "default-net",
+ "dstack-attest",
  "dstack-guest-agent-rpc",
  "dstack-types",
  "ed25519-dalek",
@@ -2406,11 +2435,13 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "bollard",
+ "cc-eventlog",
  "cert-client",
  "clap",
  "cmd_lib",
  "curve25519-dalek",
  "dcap-qvl",
+ "dstack-attest",
  "dstack-gateway-rpc",
  "dstack-kms-rpc",
  "dstack-types",
@@ -2749,9 +2780,9 @@ dependencies = [
 
 [[package]]
 name = "ez-hash"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d55891018a9c34579a8ec3c9d7d503699a68176f961eac8f06b27129f8e4520c"
+checksum = "42b3b3adc5fbbc9e21416d5b721b1bccb501a87d7b32ac89f2c7cea229d40772"
 dependencies = [
  "blake2",
  "blake3",
@@ -5618,6 +5649,7 @@ dependencies = [
  "bon",
  "cc-eventlog",
  "dcap-qvl",
+ "dstack-attest",
  "dstack-types",
  "elliptic-curve",
  "ez-hash",
@@ -5639,7 +5671,6 @@ dependencies = [
  "sha2 0.10.9",
  "sha3",
  "tdx-attest",
- "tpm-attest",
  "tpm-qvl",
  "tpm-types",
  "tracing",
