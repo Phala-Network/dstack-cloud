@@ -149,10 +149,6 @@ async fn run_oneshot(file_path: &str, config: &Config) -> anyhow::Result<()> {
         println!("App ID: {}", hex::encode(&app_info.app_id));
         println!("Instance ID: {}", hex::encode(&app_info.instance_id));
         println!("Compose hash: {}", hex::encode(&app_info.compose_hash));
-        println!("MRTD: {}", hex::encode(app_info.mrtd));
-        println!("RTMR0: {}", hex::encode(app_info.rtmr0));
-        println!("RTMR1: {}", hex::encode(app_info.rtmr1));
-        println!("RTMR2: {}", hex::encode(app_info.rtmr2));
     }
 
     // Exit with appropriate code

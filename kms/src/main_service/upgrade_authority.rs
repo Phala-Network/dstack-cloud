@@ -11,16 +11,6 @@ use serde_human_bytes as hex_bytes;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BootInfo {
     #[serde(with = "hex_bytes")]
-    pub mrtd: Vec<u8>,
-    #[serde(with = "hex_bytes")]
-    pub rtmr0: Vec<u8>,
-    #[serde(with = "hex_bytes")]
-    pub rtmr1: Vec<u8>,
-    #[serde(with = "hex_bytes")]
-    pub rtmr2: Vec<u8>,
-    #[serde(with = "hex_bytes")]
-    pub rtmr3: Vec<u8>,
-    #[serde(with = "hex_bytes")]
     pub mr_aggregated: Vec<u8>,
     #[serde(with = "hex_bytes")]
     pub os_image_hash: Vec<u8>,

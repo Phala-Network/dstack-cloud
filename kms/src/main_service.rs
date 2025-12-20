@@ -173,21 +173,12 @@ impl RpcHandler {
         let Some(tdx_report) = &att.report.tdx_report else {
             bail!("No TD report in attestation");
         };
-        let report = tdx_report
-            .report
-            .as_td10()
-            .context("Failed to decode TD report")?;
         debug!("vm_config: {vm_config_str}");
         let vm_config: VmConfig =
             serde_json::from_str(vm_config_str).context("Failed to decode VM config")?;
         let app_info = att.decode_app_info(use_boottime_mr)?;
         let os_image_hash = vm_config.os_image_hash.clone();
         let boot_info = BootInfo {
-            mrtd: report.mr_td.to_vec(),
-            rtmr0: report.rt_mr0.to_vec(),
-            rtmr1: report.rt_mr1.to_vec(),
-            rtmr2: report.rt_mr2.to_vec(),
-            rtmr3: report.rt_mr3.to_vec(),
             mr_aggregated: app_info.mr_aggregated.to_vec(),
             os_image_hash: os_image_hash.clone(),
             mr_system: app_info.mr_system.to_vec(),

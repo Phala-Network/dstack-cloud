@@ -174,11 +174,6 @@ pub async fn get_info(state: &AppState, external: bool) -> Result<AppInfo> {
     } else {
         let app_compose = state.config().app_compose.raw.clone();
         serde_json::to_string_pretty(&json!({
-            "mrtd": hex::encode(app_info.mrtd),
-            "rtmr0": hex::encode(app_info.rtmr0),
-            "rtmr1": hex::encode(app_info.rtmr1),
-            "rtmr2": hex::encode(app_info.rtmr2),
-            "rtmr3": hex::encode(app_info.rtmr3),
             "mr_aggregated": hex::encode(app_info.mr_aggregated),
             "os_image_hash": hex::encode(&app_info.os_image_hash),
             "compose_hash": hex::encode(&app_info.compose_hash),

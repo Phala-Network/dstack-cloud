@@ -331,34 +331,48 @@ impl GetPpid for DstackVerifiedReport {
     }
 }
 
+struct Mrs {
+    mr_system: [u8; 32],
+    mr_aggregated: [u8; 32],
+}
+
 impl<T: GetPpid> Attestation<T> {
-    /// Decode the app info from the event log
-    pub fn decode_app_info(&self, boottime_mr: bool) -> Result<AppInfo> {
+    fn decode_mr_tpm(&self, boottime_mr: bool, mr_key_provider: &[u8]) -> Result<Mrs> {
+        let os_image_hash = self.find_event_payload("os-image-hash").unwrap_or_default();
+        let mr_system = sha256([&os_image_hash, mr_key_provider]);
+        let tpm_quote = self.tpm_quote.as_ref().context("TPM quote not found")?;
+        let pcr0 = tpm_quote
+            .pcr_values
+            .iter()
+            .find(|p| p.index == 0)
+            .context("PCR 0 not found")?;
+        let pcr2 = tpm_quote
+            .pcr_values
+            .iter()
+            .find(|p| p.index == 2)
+            .context("PCR 2 not found")?;
+        let runtime_pcr =
+            self.replay_runtime_events::<Sha256>(boottime_mr.then_some("boot-mr-done"));
+        let mr_aggregated = sha256([&pcr0.value[..], &pcr2.value, &runtime_pcr]);
+        Ok(Mrs {
+            mr_system,
+            mr_aggregated,
+        })
+    }
+
+    fn decode_mr_tdx(&self, boottime_mr: bool, mr_key_provider: &[u8]) -> Result<Mrs> {
         let quote = self.decode_tdx_quote()?;
-        let todo = "trim mrs in AppInfo and BootInfo";
-        let device_id = sha256(self.report.get_ppid()).to_vec();
-        let td_report = quote.report.as_td10().context("TDX report not found")?;
-        let key_provider_info = if boottime_mr {
-            vec![]
-        } else {
-            self.find_event_payload("key-provider").unwrap_or_default()
-        };
         let rtmr3 = self.replay_runtime_events::<Sha384>(boottime_mr.then_some("boot-mr-done"));
-        let mr_key_provider = if key_provider_info.is_empty() {
-            [0u8; 32]
-        } else {
-            sha256(&key_provider_info)
-        };
+        let td_report = quote.report.as_td10().context("TDX report not found")?;
         let mr_system = sha256([
             &td_report.mr_td[..],
             &td_report.rt_mr0,
             &td_report.rt_mr1,
             &td_report.rt_mr2,
-            &mr_key_provider,
+            mr_key_provider,
         ]);
         let mr_aggregated = {
-            use sha2::{Digest as _, Sha256};
-            let mut hasher = Sha256::new();
+            let mut hasher = sha2::Sha256::new();
             for d in [
                 &td_report.mr_td,
                 &td_report.rt_mr0,
@@ -379,19 +393,37 @@ impl<T: GetPpid> Attestation<T> {
             }
             hasher.finalize().into()
         };
+        Ok(Mrs {
+            mr_system,
+            mr_aggregated,
+        })
+    }
+
+    /// Decode the app info from the event log
+    pub fn decode_app_info(&self, boottime_mr: bool) -> Result<AppInfo> {
+        let key_provider_info = if boottime_mr {
+            vec![]
+        } else {
+            self.find_event_payload("key-provider").unwrap_or_default()
+        };
+        let mr_key_provider = if key_provider_info.is_empty() {
+            [0u8; 32]
+        } else {
+            sha256(&key_provider_info)
+        };
+        let mrs = match self.mode {
+            AttestationMode::DstackTdx => self.decode_mr_tdx(boottime_mr, &mr_key_provider)?,
+            AttestationMode::GcpTdx => self.decode_mr_tpm(boottime_mr, &mr_key_provider)?,
+            AttestationMode::DstackNitro => bail!("Nitro attestation is not supported"),
+        };
         Ok(AppInfo {
             app_id: self.find_event_payload("app-id").unwrap_or_default(),
             compose_hash: self.find_event_payload("compose-hash").unwrap_or_default(),
             instance_id: self.find_event_payload("instance-id").unwrap_or_default(),
-            device_id,
-            mrtd: td_report.mr_td,
-            rtmr0: td_report.rt_mr0,
-            rtmr1: td_report.rt_mr1,
-            rtmr2: td_report.rt_mr2,
-            rtmr3,
             os_image_hash: self.find_event_payload("os-image-hash").unwrap_or_default(),
-            mr_system,
-            mr_aggregated,
+            device_id: sha256(self.report.get_ppid()).to_vec(),
+            mr_system: mrs.mr_system,
+            mr_aggregated: mrs.mr_aggregated,
             key_provider_info,
         })
     }
@@ -406,15 +438,12 @@ impl<T> Attestation<T> {
         Quote::parse(&tdx_quote.quote)
     }
 
-    fn find_event(&self, imr: u32, name: &str) -> Result<TdxEvent> {
-        let Some(tdx_quote) = &self.tdx_quote else {
-            bail!("tdx_quote not found");
-        };
-        for event in &tdx_quote.event_log {
-            if event.imr == 3 && event.event == "system-ready" {
+    fn find_event(&self, name: &str) -> Result<RuntimeEvent> {
+        for event in &self.runtime_events {
+            if event.event == "system-ready" {
                 break;
             }
-            if event.imr == imr && event.event == name {
+            if event.event == name {
                 return Ok(event.clone());
             }
         }
@@ -427,43 +456,32 @@ impl<T> Attestation<T> {
     }
 
     fn find_event_payload(&self, event: &str) -> Result<Vec<u8>> {
-        self.find_event(3, event).map(|event| event.event_payload)
+        self.find_event(event).map(|event| event.payload)
+    }
+
+    fn find_event_hex_payload(&self, event: &str) -> Result<String> {
+        self.find_event(event)
+            .map(|event| hex::encode(&event.payload))
     }
 
     /// Decode the app-id from the event log
     pub fn decode_app_id(&self) -> Result<String> {
-        self.find_event(3, "app-id")
-            .map(|event| hex::encode(&event.event_payload))
+        self.find_event_hex_payload("app-id")
     }
 
     /// Decode the instance-id from the event log
     pub fn decode_instance_id(&self) -> Result<String> {
-        self.find_event(3, "instance-id")
-            .map(|event| hex::encode(&event.event_payload))
+        self.find_event_hex_payload("instance-id")
     }
 
     /// Decode the upgraded app-id from the event log
     pub fn decode_compose_hash(&self) -> Result<String> {
-        let event = self.find_event(3, "compose-hash").or_else(|_| {
-            // Old images use this event name
-            self.find_event(3, "upgraded-app-id")
-        })?;
-        Ok(hex::encode(&event.event_payload))
+        self.find_event_hex_payload("compose-hash")
     }
 
     /// Decode the rootfs hash from the event log
     pub fn decode_rootfs_hash(&self) -> Result<String> {
-        self.find_event(3, "rootfs-hash")
-            .map(|event| hex::encode(event.digest()))
-    }
-
-    /// Decode the report data in the quote
-    pub fn decode_tdx_report_data(&self) -> Result<[u8; 64]> {
-        match self.decode_tdx_quote()?.report {
-            Report::SgxEnclave(report) => Ok(report.report_data),
-            Report::TD10(report) => Ok(report.report_data),
-            Report::TD15(report) => Ok(report.base.report_data),
-        }
+        self.find_event_hex_payload("rootfs-hash")
     }
 }
 
@@ -727,21 +745,6 @@ pub struct AppInfo {
     /// ID of the device
     #[serde(with = "hex_bytes")]
     pub device_id: Vec<u8>,
-    /// TCB info
-    #[serde(with = "hex_bytes")]
-    pub mrtd: [u8; 48],
-    /// Runtime MR0
-    #[serde(with = "hex_bytes")]
-    pub rtmr0: [u8; 48],
-    /// Runtime MR1
-    #[serde(with = "hex_bytes")]
-    pub rtmr1: [u8; 48],
-    /// Runtime MR2
-    #[serde(with = "hex_bytes")]
-    pub rtmr2: [u8; 48],
-    /// Runtime MR3
-    #[serde(with = "hex_bytes")]
-    pub rtmr3: [u8; 48],
     /// Measurement of everything except the app info
     #[serde(with = "hex_bytes")]
     pub mr_system: [u8; 32],
