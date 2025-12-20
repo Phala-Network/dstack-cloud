@@ -1,6 +1,5 @@
 //! Embedding and extracting attestation from/to TLS certificate
 
-use cc_eventlog::TdxEvent;
 pub use dstack_attest::attestation::*;
 
 use crate::{oids, traits::CertExt};
@@ -34,25 +33,8 @@ pub fn from_ext_getter(
         return Ok(None);
     };
     let raw_event_log = get_ext(oids::PHALA_RATLS_EVENT_LOG)?.context("TDX event log missing")?;
-    let tdx_event_log: Vec<TdxEvent> = if !raw_event_log.is_empty() {
-        // Decompress if needed (handles both compressed and uncompressed formats)
-        serde_json::from_slice(&raw_event_log).context("invalid event log")?
-    } else {
-        vec![]
-    };
-    let runtime_events = tdx_event_log
-        .iter()
-        .flat_map(|event| event.to_runtime_event())
-        .collect();
-    Ok(Some(Attestation {
-        mode: AttestationMode::DstackTdx,
-        tdx_quote: Some(TdxQuote {
-            quote: tdx_quote,
-            event_log: tdx_event_log,
-        }),
-        tpm_quote: None,
-        runtime_events,
-        config: "".into(),
-        report: (),
-    }))
+    Ok(Some(
+        Attestation::from_tdx_quote(tdx_quote, &raw_event_log)
+            .context("Failed to create attestation from TDX quote")?,
+    ))
 }

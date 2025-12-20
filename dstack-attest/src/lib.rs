@@ -5,6 +5,10 @@
 use anyhow::Context;
 use cc_eventlog::RuntimeEvent;
 
+pub use cc_eventlog as ccel;
+pub use tdx_attest as tdx;
+pub use tpm_attest as tpm;
+
 use crate::attestation::AttestationMode;
 
 pub mod attestation;

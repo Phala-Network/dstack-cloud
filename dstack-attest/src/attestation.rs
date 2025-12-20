@@ -13,7 +13,7 @@ use dcap_qvl::{
     verify::VerifiedReport as TdxVerifiedReport,
 };
 use dstack_types::Platform;
-use ez_hash::{Hasher, Sha256, Sha384};
+use ez_hash::{sha256, Hasher, Sha256, Sha384};
 use or_panic::ResultOrPanic;
 use scale::{Decode, Encode};
 use serde::{Deserialize, Serialize};
@@ -188,6 +188,8 @@ impl QuoteContentType<'_> {
 /// Represents a verified attestation
 #[derive(Clone)]
 pub struct DstackVerifiedReport {
+    /// The attestation mode
+    pub mode: AttestationMode,
     /// The verified TDX report
     pub tdx_report: Option<TdxVerifiedReport>,
     /// The verified TPM report
@@ -206,35 +208,6 @@ impl DstackVerifiedReport {
     /// Check if the report is empty
     pub fn is_empty(&self) -> bool {
         self.tdx_report.is_none() && self.tpm_report.is_none()
-    }
-
-    /// Ensure report data matches
-    pub fn ensure_report_data(&self, report_data: Option<[u8; 64]>) -> Result<[u8; 64]> {
-        let expected = match (&self.tdx_report, report_data) {
-            (Some(tdx_report), Some(rd)) => {
-                let td_report_data = get_report_data(tdx_report);
-                if td_report_data != rd {
-                    bail!("tdx report_data mismatch");
-                }
-                td_report_data
-            }
-            (Some(tdx_report), None) => get_report_data(tdx_report),
-            (None, Some(rd)) => rd,
-            (None, None) => bail!("no verified report"),
-        };
-
-        if let Some(tpm_report) = &self.tpm_report {
-            let expected_tpm_report_data = sha256(&[&expected]).to_vec();
-            if tpm_report.attest.qualified_data != expected_tpm_report_data {
-                bail!(
-                    "tpm qualified_data mismatch, expected: {}, actual: {}, report_data: {}",
-                    hex_fmt::HexFmt(&expected_tpm_report_data),
-                    hex_fmt::HexFmt(&tpm_report.attest.qualified_data),
-                    hex_fmt::HexFmt(&expected)
-                );
-            }
-        }
-        Ok(expected)
     }
 }
 
@@ -307,6 +280,9 @@ pub struct Attestation<R = ()> {
 
     /// Runtime events (only for TDX mode)
     pub runtime_events: Vec<RuntimeEvent>,
+
+    /// The report data
+    pub report_data: [u8; 64],
 
     /// The configuration of the VM
     pub config: String,
@@ -393,7 +369,9 @@ impl<T> Attestation<T> {
     /// Decode the app info from the event log
     pub fn decode_app_info(&self, boottime_mr: bool) -> Result<AppInfo> {
         let quote = self.decode_tdx_quote()?;
-        let device_id = sha256(&[&quote.header.user_data]).to_vec();
+        let todo = "use ppid as device_id";
+        let todo = "trim mrs in AppInfo and BootInfo";
+        let device_id = sha256(quote.header.user_data).to_vec();
         let td_report = quote.report.as_td10().context("TDX report not found")?;
         let key_provider_info = if boottime_mr {
             vec![]
@@ -404,10 +382,10 @@ impl<T> Attestation<T> {
         let mr_key_provider = if key_provider_info.is_empty() {
             [0u8; 32]
         } else {
-            sha256(&[&key_provider_info])
+            sha256(&key_provider_info)
         };
-        let mr_system = sha256(&[
-            &td_report.mr_td,
+        let mr_system = sha256([
+            &td_report.mr_td[..],
             &td_report.rt_mr0,
             &td_report.rt_mr1,
             &td_report.rt_mr2,
@@ -484,6 +462,11 @@ impl Attestation {
             .iter()
             .flat_map(|event| event.to_runtime_event())
             .collect();
+        let report_data = {
+            let quote = dcap_qvl::quote::Quote::parse(&quote).context("Invalid TDX quote")?;
+            let report = quote.report.as_td10().context("Invalid TDX report")?;
+            report.report_data
+        };
         Ok(Attestation {
             mode: AttestationMode::DstackTdx,
             tpm_quote: None,
@@ -492,6 +475,7 @@ impl Attestation {
                 event_log: tdx_eventlog,
             }),
             runtime_events,
+            report_data,
             config: "".into(),
             report: (),
         })
@@ -501,19 +485,22 @@ impl Attestation {
     pub fn quote(report_data: &[u8; 64]) -> Result<Self> {
         let mode = AttestationMode::detect()?;
         let runtime_events = RuntimeEvent::read_all().context("Failed to read runtime events")?;
-        let tdx_quote = if mode.has_tdx() {
+        let tpm_qualifying_data;
+        let tdx_quote;
+        if mode.has_tdx() {
             let quote = tdx_attest::get_quote(report_data).context("Failed to get quote")?;
             let event_log =
                 cc_eventlog::tdx::read_event_log().context("Failed to read event log")?;
-            Some(TdxQuote { quote, event_log })
+            tpm_qualifying_data = sha256(&quote);
+            tdx_quote = Some(TdxQuote { quote, event_log });
         } else {
-            None
+            tpm_qualifying_data = sha256(report_data);
+            tdx_quote = None;
         };
         let tpm_quote = if mode.has_tpm() {
-            let qualifying_data = ez_hash::sha256(report_data);
             let tpm_ctx = tpm_attest::TpmContext::detect().context("Failed to open TPM context")?;
             let quote = tpm_ctx
-                .create_quote(&qualifying_data, &tpm_attest::dstack_pcr_policy())
+                .create_quote(&tpm_qualifying_data, &tpm_attest::dstack_pcr_policy())
                 .context("Failed to create TPM quote")?;
             Some(quote)
         } else {
@@ -527,6 +514,7 @@ impl Attestation {
             tdx_quote,
             tpm_quote,
             runtime_events,
+            report_data: *report_data,
             config,
             report: (),
         })
@@ -546,15 +534,14 @@ impl Attestation {
         pccs_url: Option<&str>,
     ) -> Result<VerifiedAttestation> {
         let expected_report_data = QuoteContentType::RaTlsCert.to_report_data(ra_pubkey_der);
-        self.verify(Some(expected_report_data), pccs_url).await
+        if self.report_data != expected_report_data {
+            bail!("report data mismatch");
+        }
+        self.verify(pccs_url).await
     }
 
     /// Verify the quote
-    pub async fn verify(
-        self,
-        report_data: Option<[u8; 64]>,
-        pccs_url: Option<&str>,
-    ) -> Result<VerifiedAttestation> {
+    pub async fn verify(self, pccs_url: Option<&str>) -> Result<VerifiedAttestation> {
         let tpm_report = if self.mode.has_tpm() {
             let report = self
                 .verify_tpm()
@@ -594,19 +581,56 @@ impl Attestation {
         } else {
             None
         };
+
+        match self.mode {
+            AttestationMode::DstackTdx => {
+                // For bare dstack TDX machine, we only make sure the report data is correct
+                let Some(tdx_report) = &tdx_report else {
+                    bail!("TDX report is missing in dstack-tdx mode");
+                };
+                let td_report_data = get_report_data(tdx_report);
+                if td_report_data != self.report_data[..] {
+                    bail!("tdx report_data mismatch");
+                }
+            }
+            AttestationMode::GcpTdx => {
+                let Some(tdx_report) = &tdx_report else {
+                    bail!("TDX report is missing in gcp-tdx mode");
+                };
+                let Some(td10_report) = tdx_report.report.as_td10() else {
+                    bail!("TD10 report is missing in gcp-tdx mode");
+                };
+                if td10_report.report_data != self.report_data[..] {
+                    bail!("tdx report_data mismatch");
+                }
+                let tdx_quote = &self.tdx_quote.as_ref().context("TDX quote missing")?.quote;
+                let Some(tpm_report) = &tpm_report else {
+                    bail!("TPM report is missing in gcp-tdx mode");
+                };
+                // TPM quote the TDX quote
+                let qualifying_data = sha256(tdx_quote);
+                if qualifying_data != tpm_report.attest.qualified_data[..] {
+                    bail!("tpm qualified_data mismatch");
+                }
+            }
+            AttestationMode::DstackNitro => {
+                bail!("Nitro not supported");
+            }
+        }
         let report = DstackVerifiedReport {
+            mode: self.mode,
             tdx_report,
             tpm_report,
         };
         if report.is_empty() {
             bail!("nothing verified");
         }
-        report.ensure_report_data(report_data)?;
         Ok(VerifiedAttestation {
             mode: self.mode,
             tdx_quote: self.tdx_quote,
             tpm_quote: self.tpm_quote,
             runtime_events: self.runtime_events,
+            report_data: self.report_data,
             config: self.config,
             report,
         })
@@ -635,8 +659,6 @@ impl Attestation {
         Ok(tdx_report)
     }
 }
-
-impl Attestation<DstackVerifiedReport> {}
 
 /// Validate the TCB attributes
 pub fn validate_tcb(report: &TdxVerifiedReport) -> Result<()> {
@@ -712,15 +734,6 @@ pub struct AppInfo {
     /// Key provider info
     #[serde(with = "hex_bytes")]
     pub key_provider_info: Vec<u8>,
-}
-
-fn sha256(data: &[&[u8]]) -> [u8; 32] {
-    use sha2::{Digest as _, Sha256};
-    let mut hasher = Sha256::new();
-    for d in data {
-        hasher.update(d);
-    }
-    hasher.finalize().into()
 }
 
 #[cfg(test)]

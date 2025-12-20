@@ -408,7 +408,7 @@ impl CvmVerifier {
 
         let attestation = attestation.into_inner();
         let debug = request.debug.unwrap_or(false);
-        let verified = attestation.verify(None, request.pccs_url.as_deref()).await;
+        let verified = attestation.verify(request.pccs_url.as_deref()).await;
         let verified_attestation = match verified {
             Ok(att) => {
                 details.quote_verified = true;
@@ -419,11 +419,7 @@ impl CvmVerifier {
                     .as_ref()
                     .map(|r| r.advisory_ids.clone())
                     .unwrap_or_default();
-                let report_data = att
-                    .report
-                    .ensure_report_data(None)
-                    .context("Failed to decode report data")?;
-                details.report_data = Some(hex::encode(report_data));
+                details.report_data = Some(hex::encode(att.report_data));
                 att
             }
             Err(e) => {

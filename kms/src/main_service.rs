@@ -177,10 +177,10 @@ impl RpcHandler {
             .report
             .as_td10()
             .context("Failed to decode TD report")?;
-        let app_info = att.decode_app_info(use_boottime_mr)?;
         debug!("vm_config: {vm_config_str}");
         let vm_config: VmConfig =
             serde_json::from_str(vm_config_str).context("Failed to decode VM config")?;
+        let app_info = att.decode_app_info(use_boottime_mr)?;
         let os_image_hash = vm_config.os_image_hash.clone();
         let boot_info = BootInfo {
             mrtd: report.mr_td.to_vec(),
