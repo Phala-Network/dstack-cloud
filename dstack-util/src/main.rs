@@ -11,11 +11,12 @@ use host_api::HostApi;
 use k256::schnorr::SigningKey;
 use ra_rpc::Attestation;
 use ra_tls::{
-    attestation::QuoteContentType,
+    attestation::{QuoteContentType, VersionedAttestation},
     cert::generate_ra_cert,
     kdf::{derive_ecdsa_key, derive_ecdsa_key_pair_from_bytes},
     rcgen::KeyPair,
 };
+use scale::Encode;
 use std::path::Path;
 use std::{
     io::{self, Read, Write},
@@ -79,6 +80,8 @@ enum Commands {
     QuoteReport(QuoteReportArgs),
     /// Generate a versioned attestation for simulator use
     Attest(AttestArgs),
+    /// Show size breakdown for a versioned attestation file
+    AttestInfo(AttestInfoArgs),
 }
 
 #[derive(Parser)]
@@ -294,6 +297,13 @@ struct AttestArgs {
     hex: bool,
 }
 
+#[derive(Parser)]
+struct AttestInfoArgs {
+    /// input file (default: attestation.bin)
+    #[arg(short, long)]
+    input: Option<PathBuf>,
+}
+
 fn pad64(data: &[u8]) -> Result<[u8; 64]> {
     if data.len() > 64 {
         anyhow::bail!("report_data must be at most 64 bytes");
@@ -354,6 +364,49 @@ fn cmd_attest(args: AttestArgs) -> Result<()> {
         .output
         .unwrap_or_else(|| PathBuf::from("attestation.bin"));
     fs::write(&output, &attestation).context("Failed to write attestation sample")?;
+    Ok(())
+}
+
+fn cmd_attest_info(args: AttestInfoArgs) -> Result<()> {
+    let input = args
+        .input
+        .unwrap_or_else(|| PathBuf::from("attestation.bin"));
+    let data = fs::read(&input).context("Failed to read attestation file")?;
+    let attestation =
+        VersionedAttestation::from_scale(&data).context("Failed to decode attestation")?;
+
+    println!("file: {}", input.display());
+    println!("total_bytes: {}", data.len());
+
+    match attestation {
+        VersionedAttestation::V0 { attestation } => {
+            println!("version: V0");
+            println!("mode: {:?}", attestation.mode);
+            println!("config_bytes: {}", attestation.config.as_bytes().len());
+            match attestation.tdx_quote {
+                Some(tdx) => {
+                    let event_log_json = serde_json::to_vec(&tdx.event_log)
+                        .context("Failed to serialize event log")?;
+                    println!("tdx_quote_bytes: {}", tdx.quote.len());
+                    println!("event_log_entries: {}", tdx.event_log.len());
+                    println!("event_log_json_bytes: {}", event_log_json.len());
+                }
+                None => {
+                    println!("tdx_quote_bytes: 0");
+                    println!("event_log_entries: 0");
+                    println!("event_log_json_bytes: 0");
+                }
+            }
+            match attestation.tpm_quote {
+                Some(tpm) => {
+                    let tpm_bytes = tpm.encode();
+                    println!("tpm_quote_bytes: {}", tpm_bytes.len());
+                }
+                None => println!("tpm_quote_bytes: 0"),
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1014,6 +1067,9 @@ async fn main() -> Result<()> {
         }
         Commands::Attest(args) => {
             cmd_attest(args)?;
+        }
+        Commands::AttestInfo(args) => {
+            cmd_attest_info(args)?;
         }
     }
 
