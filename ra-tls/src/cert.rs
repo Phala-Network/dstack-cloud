@@ -510,6 +510,7 @@ pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertP
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dstack_attest::attestation::TdxQuote;
     use rcgen::PKCS_ECDSA_P256_SHA256;
     use scale::Encode;
 
@@ -626,6 +627,8 @@ mod tests {
                 mode: AttestationMode::DstackTdx,
                 tdx_quote: None,
                 tpm_quote: None,
+                runtime_events: vec![],
+                report_data: [0u8; 64],
                 config: "".into(),
                 report: (),
             }
@@ -633,7 +636,7 @@ mod tests {
         };
 
         let actual = hex::encode(csr.encode());
-        let expected = "44706c65617365207369676e20636572743a0c0102030040746573742e6578616d706c652e636f6d00010000000000";
+        let expected = "44706c65617365207369676e20636572743a0c0102030040746573742e6578616d706c652e636f6d0001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
         assert_eq!(actual, expected);
     }
 
@@ -657,6 +660,8 @@ mod tests {
                     event_log: vec![],
                 }),
                 tpm_quote: None,
+                runtime_events: vec![],
+                report_data: [0u8; 64],
                 config: "".into(),
                 report: (),
             }
@@ -664,7 +669,7 @@ mod tests {
         };
 
         let actual = hex::encode(csr.encode());
-        let expected = "44706c65617365207369676e20636572743a0c0102030040746573742e6578616d706c652e636f6d00010001000104090000";
+        let expected = "44706c65617365207369676e20636572743a0c0102030040746573742e6578616d706c652e636f6d0001000100000104090000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
         assert_eq!(actual, expected);
     }
 }

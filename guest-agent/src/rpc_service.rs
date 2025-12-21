@@ -757,6 +757,7 @@ mod tests {
             enabled: true,
             quote_file: dummy_quote_file.path().to_str().unwrap().to_string(),
             event_log_file: dummy_event_log_file.path().to_str().unwrap().to_string(),
+            attestation_file: String::new(),
         };
 
         let dummy_appcompose = AppCompose {
