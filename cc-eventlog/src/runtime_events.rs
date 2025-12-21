@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use fs_err as fs;
 use scale::{Decode, Encode};
 use serde::{Deserialize, Serialize};
+use serde_human_bytes::base64;
 use std::io::Write;
 
 use ez_hash::{Hasher, Sha256, Sha384};
@@ -19,6 +20,7 @@ pub struct RuntimeEvent {
     /// Event name
     pub event: String,
     /// Event payload
+    #[serde(with = "base64")]
     pub payload: Vec<u8>,
 }
 
