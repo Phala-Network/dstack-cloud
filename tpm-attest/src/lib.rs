@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn test_default_pcr_policy() {
         let policy = dstack_pcr_policy();
-        assert_eq!(policy.to_arg(), "sha256:0,1,2,3,4,5,6,7,8,9,14");
+        assert_eq!(policy.to_arg(), "sha256:0,2,14");
     }
 }
 
