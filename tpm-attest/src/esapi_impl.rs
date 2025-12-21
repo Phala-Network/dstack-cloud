@@ -253,7 +253,7 @@ impl EsapiContext {
 
     /// Extend a PCR with a hash value
     pub fn pcr_extend(&mut self, pcr: u32, hash: &[u8], bank: &str) -> Result<()> {
-        use tss_esapi::handles::{PcrHandle, PcrTpmHandle};
+        use tss_esapi::handles::PcrHandle;
         use tss_esapi::structures::Digest;
 
         let hash_alg = match bank {
@@ -263,13 +263,9 @@ impl EsapiContext {
             _ => bail!("unsupported hash algorithm: {bank}"),
         };
 
-        // Create PCR handle from index
-        let pcr_tpm_handle =
-            PcrTpmHandle::new(pcr).with_context(|| format!("invalid PCR index: {pcr}"))?;
-        let object_handle = self
-            .context
-            .tr_from_tpm_public(TpmHandle::Pcr(pcr_tpm_handle))
-            .context("failed to get PCR handle")?;
+        // PCR handles are pre-defined; do not resolve via ReadPublic.
+        let pcr_handle =
+            PcrHandle::try_from(pcr).with_context(|| format!("invalid PCR index: {pcr}"))?;
 
         // Create digest from hash bytes
         let digest =
@@ -279,10 +275,6 @@ impl EsapiContext {
         let mut digest_values = DigestValues::new();
         digest_values.set(hash_alg, digest);
 
-        // Extend PCR - convert object_handle via Into trait
-        let pcr_handle: PcrHandle = object_handle
-            .try_into()
-            .context("failed to convert object handle to PCR handle")?;
         self.context
             .execute_with_nullauth_session(|ctx| ctx.pcr_extend(pcr_handle, digest_values))
             .with_context(|| format!("failed to extend PCR {pcr} with {bank}"))?;
