@@ -310,6 +310,13 @@ impl<T> Attestation<T> {
             .as_ref()
             .map(|q| serde_json::to_string(&q.event_log).unwrap_or_default())
     }
+
+    pub fn get_td10_report(&self) -> Option<TDReport10> {
+        self.tdx_quote
+            .as_ref()
+            .and_then(|q| Quote::parse(&q.quote).ok())
+            .and_then(|quote| quote.report.as_td10().cloned())
+    }
 }
 
 pub trait GetPpid {
@@ -501,7 +508,7 @@ impl Attestation {
             .flat_map(|event| event.to_runtime_event())
             .collect();
         let report_data = {
-            let quote = dcap_qvl::quote::Quote::parse(&quote).context("Invalid TDX quote")?;
+            let quote = Quote::parse(&quote).context("Invalid TDX quote")?;
             let report = quote.report.as_td10().context("Invalid TDX report")?;
             report.report_data
         };

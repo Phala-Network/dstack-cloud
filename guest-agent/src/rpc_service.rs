@@ -173,7 +173,22 @@ pub async fn get_info(state: &AppState, external: bool) -> Result<AppInfo> {
         "".to_string()
     } else {
         let app_compose = state.config().app_compose.raw.clone();
+        let td_report = match attestation.get_td10_report() {
+            Some(report) => json!({
+                "mrtd": hex::encode(report.mr_td),
+                "rtmr0": hex::encode(report.rt_mr0),
+                "rtmr1": hex::encode(report.rt_mr1),
+                "rtmr2": hex::encode(report.rt_mr2),
+                "rtmr3": hex::encode(report.rt_mr3),
+            }),
+            None => json!({}),
+        };
         serde_json::to_string_pretty(&json!({
+            "mrtd": td_report["mrtd"],
+            "rtmr0": td_report["rtmr0"],
+            "rtmr1": td_report["rtmr1"],
+            "rtmr2": td_report["rtmr2"],
+            "rtmr3": td_report["rtmr3"],
             "mr_aggregated": hex::encode(app_info.mr_aggregated),
             "os_image_hash": hex::encode(&app_info.os_image_hash),
             "compose_hash": hex::encode(&app_info.compose_hash),
