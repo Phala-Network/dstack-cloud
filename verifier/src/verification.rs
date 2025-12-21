@@ -12,6 +12,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use cc_eventlog::TdxEvent;
 use dstack_mr::{RtmrLog, TdxMeasurementDetails, TdxMeasurements};
 use dstack_types::VmConfig;
+use hex_literal::hex;
 use ra_tls::attestation::{
     Attestation, AttestationMode, TpmQuote, VerifiedAttestation, VersionedAttestation,
 };
@@ -641,16 +642,14 @@ impl CvmVerifier {
         tpm_quote: &TpmQuote,
     ) -> Result<()> {
         // Verify PCR 0 (GCP OVMF firmware)
-        const EXPECTED_PCR0: &str =
-            "0cca9ec161b09288802e5a112255d21340ed5b797f5fe29cecccfd8f67b9f802";
+        const EXPECTED_PCR0: [u8; 32] =
+            hex!("0cca9ec161b09288802e5a112255d21340ed5b797f5fe29cecccfd8f67b9f802");
 
         let pcr0 = tpm_quote
             .pcr_values
             .iter()
             .find(|p| p.index == 0)
             .context("PCR 0 not found in TPM quote")?;
-
-        let pcr0_hex = hex::encode(&pcr0.value);
 
         // Get expected UKI hash from os_image_hash (which should be set to UKI Authenticode hash)
         let expected_uki_hash = &vm_config.os_image_hash;
@@ -664,8 +663,11 @@ impl CvmVerifier {
         // Extract Event 28 (3rd event, 0-indexed as 2)
         // NOTE: This is GCP OVMF-specific behavior
         let event_28_digest = {
-            if pcr0_hex != EXPECTED_PCR0 {
-                bail!("PCR 0 mismatch: expected GCP OVMF v2 ({EXPECTED_PCR0}), got {pcr0_hex}");
+            if pcr0.value != EXPECTED_PCR0 {
+                bail!(
+                    "PCR 0 mismatch: expected GCP OVMF v2, got {}",
+                    hex::encode(&pcr0.value)
+                );
             }
             &pcr2_events.get(2).context("Event 28 not found")?.digest
         };
