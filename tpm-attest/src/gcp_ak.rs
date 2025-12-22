@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! GCP vTPM pre-provisioned AK loading using tss-esapi
 //!
 //! This module provides native Rust implementation for loading GCP's

@@ -1,4 +1,8 @@
 #!/bin/bash
+
+# SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
+# SPDX-License-Identifier: Apache-2.0
+
 # Test script for remove-orphans command (both online and offline modes)
 # Uses real docker compose to create containers for accurate testing
 
