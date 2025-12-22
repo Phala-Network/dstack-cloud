@@ -161,10 +161,6 @@ pub fn remove_orphans_direct(
 
     let containers_dir = docker_root.as_ref().join("containers");
     if !containers_dir.exists() {
-        println!(
-            "Docker containers directory does not exist: {}",
-            containers_dir.display()
-        );
         return Ok(());
     }
 
