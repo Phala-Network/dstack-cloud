@@ -95,7 +95,7 @@ fn create_hd(
     Ok(())
 }
 
-/// Create a FAT32 disk image from a directory using pure Rust (no external commands)
+/// Create a FAT32 disk image from a directory
 fn create_shared_disk(disk_path: impl AsRef<Path>, shared_dir: impl AsRef<Path>) -> Result<()> {
     use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
     use std::io::{Cursor, Seek, SeekFrom, Write};
