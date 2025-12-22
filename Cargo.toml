@@ -20,6 +20,7 @@ members = [
     "ra-tls",
     "tdx-attest",
     "tpm-attest",
+    "tpm2",
     "tpm-types",
     "tpm-qvl",
     "dstack-attest",
@@ -72,6 +73,7 @@ supervisor = { path = "supervisor" }
 supervisor-client = { path = "supervisor/client" }
 tdx-attest = { path = "tdx-attest" }
 tpm-attest = { path = "tpm-attest" }
+tpm2 = { path = "tpm2" }
 tpm-types = { path = "tpm-types" }
 dstack-attest = { path = "dstack-attest" }
 tpm-qvl = { path = "tpm-qvl" }

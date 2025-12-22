@@ -22,5 +22,5 @@ fs-err.workspace = true
 tpm-types.workspace = true
 dstack-types.workspace = true
 
-# TPM 2.0 TSS ESAPI for low-level TPM operations
-tss-esapi = "7.5"
+# Pure Rust TPM 2.0 implementation - no C library dependencies
+tpm2.workspace = true

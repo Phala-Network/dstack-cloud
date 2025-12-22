@@ -6,7 +6,7 @@
 //!
 //! This module provides functionality for generating TPM attestation quotes
 //! on the device side. It handles PCR operations, sealing, unsealing, NV storage,
-//! and quote generation using the TPM2 Software Stack (tss-esapi).
+//! and quote generation.
 //!
 //! This follows the same architecture as tdx-attest: device-side attestation only.
 //! For quote verification, see the tpm-qvl crate.
@@ -18,8 +18,8 @@ use tracing::{debug, warn};
 // Re-export tpm-types
 pub use tpm_types::{PcrSelection, PcrValue, TpmEvent, TpmEventLog, TpmQuote};
 
-mod esapi_impl;
-use esapi_impl::EsapiContext;
+mod esapi;
+use esapi::EsapiContext;
 
 pub const PRIMARY_KEY_HANDLE: u32 = 0x81000100;
 pub const SEALED_NV_INDEX: u32 = 0x01801101;
