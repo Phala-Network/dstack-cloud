@@ -267,6 +267,10 @@ mount --rbind $DATA_MNT/var/lib/docker /var/lib/docker
 mount --rbind $DATA_MNT/var/lib/containerd /var/lib/containerd
 mount --rbind $WORK_DIR /dstack
 
+echo "======== Disk usage ========"
+df -h
+echo "============================"
+
 cd /dstack
 
 if [ $(jq 'has("init_script")' app-compose.json) == true ]; then
