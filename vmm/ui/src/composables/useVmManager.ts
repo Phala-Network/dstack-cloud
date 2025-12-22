@@ -1101,7 +1101,7 @@ type CreateVmPayloadSource = {
       attachAllGpus: false,
       encryptedEnvs: [], // Clear environment variables
       ports: [], // Clear port mappings
-      storage_fs: theVm.appCompose?.storage_fs || 'ext4',
+      storage_fs: theVm.appCompose?.storage_fs || 'zfs',
       app_id: config.app_id || '',
       kms_urls: config.kms_urls || [],
       key_provider: getKeyProvider(theVm),
