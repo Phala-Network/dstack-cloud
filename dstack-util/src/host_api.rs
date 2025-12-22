@@ -4,7 +4,10 @@
 
 use crate::utils::{deserialize_json_file, sha256, SysConfig};
 use anyhow::{anyhow, bail, Context, Result};
-use dstack_types::shared_filenames::{HOST_SHARED_DIR, SYS_CONFIG};
+use dstack_types::{
+    shared_filenames::{HOST_SHARED_DIR, SYS_CONFIG},
+    Platform,
+};
 use host_api::{
     client::{new_client, DefaultClient},
     Notification,
@@ -53,6 +56,13 @@ impl HostApi {
     }
 
     pub async fn notify(&self, event: &str, payload: &str) -> Result<()> {
+        match Platform::detect_or_dstack() {
+            Platform::Dstack => {}
+            Platform::Gcp => {
+                // Skip notify on GCP as no host dstack-vmm there.
+                return Ok(());
+            }
+        }
         self.client
             .notify(Notification {
                 event: event.to_string(),
