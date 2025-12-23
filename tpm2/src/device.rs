@@ -85,7 +85,6 @@ impl TpmDevice {
 /// TPM command builder
 pub struct TpmCommand {
     buf: CommandBuffer,
-    has_sessions: bool,
 }
 
 impl TpmCommand {
@@ -98,10 +97,7 @@ impl TpmCommand {
         buf.put_u32(0); // Size placeholder
         buf.put_u32(command_code.to_u32());
 
-        Self {
-            buf,
-            has_sessions: false,
-        }
+        Self { buf }
     }
 
     /// Create a new command with sessions
@@ -113,10 +109,7 @@ impl TpmCommand {
         buf.put_u32(0); // Size placeholder
         buf.put_u32(command_code.to_u32());
 
-        Self {
-            buf,
-            has_sessions: true,
-        }
+        Self { buf }
     }
 
     /// Add a handle to the command
