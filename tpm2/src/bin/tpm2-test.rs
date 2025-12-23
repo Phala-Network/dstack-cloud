@@ -25,7 +25,7 @@
 //!   all         - Run all tests
 
 use std::env;
-use tpm2::{tpm_rh, TpmAlgId, TpmContext, TpmlPcrSelection, TpmtPublic};
+use tpm2::{tpm_rh, ResponseBuffer, TpmAlgId, TpmContext, TpmlPcrSelection, TpmtPublic, Unmarshal};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -300,6 +300,17 @@ fn test_quote_rsa() {
                                     println!("✓ Generated quote:");
                                     println!("  Quoted size: {} bytes", quoted.len());
                                     println!("  Signature size: {} bytes", signature.len());
+
+                                    match verify_quote_pcr_digest(&mut ctx, &quoted, &pcr_selection)
+                                    {
+                                        Ok(()) => println!(
+                                            "✓ Quote PCR digest matches current PCR values"
+                                        ),
+                                        Err(e) => println!(
+                                            "✗ Quote PCR digest verification failed: {}",
+                                            e
+                                        ),
+                                    }
                                 }
                                 Err(e) => {
                                     println!("✗ Quote failed: {}", e);
@@ -371,6 +382,17 @@ fn test_quote_ecc() {
                                     println!("✓ Generated ECC quote:");
                                     println!("  Quoted size: {} bytes", quoted.len());
                                     println!("  Signature size: {} bytes", signature.len());
+
+                                    match verify_quote_pcr_digest(&mut ctx, &quoted, &pcr_selection)
+                                    {
+                                        Ok(()) => println!(
+                                            "✓ Quote PCR digest matches current PCR values"
+                                        ),
+                                        Err(e) => println!(
+                                            "✗ Quote PCR digest verification failed: {}",
+                                            e
+                                        ),
+                                    }
                                 }
                                 Err(e) => {
                                     println!("✗ Quote failed: {}", e);
@@ -751,9 +773,83 @@ fn test_seal_unseal() {
     println!();
 }
 
+fn parse_quote_attestation(quoted: &[u8]) -> anyhow::Result<(TpmlPcrSelection, Vec<u8>)> {
+    let mut buf = ResponseBuffer::new(quoted);
+
+    let magic = buf.get_u32()?;
+    let attest_type = buf.get_u16()?;
+    if magic != 0xff544347 {
+        anyhow::bail!("unexpected TPMS_ATTEST.magic: 0x{:08x}", magic);
+    }
+    if attest_type != 0x8018 {
+        anyhow::bail!("unexpected TPMS_ATTEST.type: 0x{:04x}", attest_type);
+    }
+    let _qualified_signer = buf.get_tpm2b()?;
+    let _extra_data = buf.get_tpm2b()?;
+
+    let _clock = buf.get_u64()?;
+    let _reset_count = buf.get_u32()?;
+    let _restart_count = buf.get_u32()?;
+    let _safe = buf.get_u8()?;
+
+    let _firmware_version = buf.get_u64()?;
+
+    let pcr_select = TpmlPcrSelection::unmarshal(&mut buf)?;
+    let pcr_digest = buf.get_tpm2b()?;
+
+    Ok((pcr_select, pcr_digest))
+}
+
+fn verify_quote_pcr_digest(
+    ctx: &mut TpmContext,
+    quoted: &[u8],
+    requested_selection: &TpmlPcrSelection,
+) -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256, Sha384, Sha512};
+
+    let (attested_selection, attested_digest) = parse_quote_attestation(quoted)?;
+
+    if attested_selection.pcr_selections.len() != requested_selection.pcr_selections.len() {
+        anyhow::bail!("quote returned unexpected PCR selection count");
+    }
+    for (a, r) in attested_selection
+        .pcr_selections
+        .iter()
+        .zip(requested_selection.pcr_selections.iter())
+    {
+        if a.hash.to_u16() != r.hash.to_u16() || a.pcr_select != r.pcr_select {
+            anyhow::bail!("quote returned PCR selection different from request");
+        }
+    }
+
+    if requested_selection.pcr_selections.len() != 1 {
+        anyhow::bail!("quote PCR verification only supports a single PCR bank selection");
+    }
+    let hash_alg = requested_selection.pcr_selections[0].hash;
+
+    let mut values = ctx.pcr_read(requested_selection)?;
+    values.sort_by_key(|(idx, _)| *idx);
+    let mut concat = Vec::new();
+    for (_, v) in values {
+        concat.extend_from_slice(&v);
+    }
+
+    let computed = match hash_alg {
+        TpmAlgId::Sha256 => Sha256::digest(&concat).to_vec(),
+        TpmAlgId::Sha384 => Sha384::digest(&concat).to_vec(),
+        TpmAlgId::Sha512 => Sha512::digest(&concat).to_vec(),
+        _ => anyhow::bail!("unsupported hash algorithm for quote PCR digest verification"),
+    };
+    if computed != attested_digest {
+        anyhow::bail!("pcrDigest mismatch");
+    }
+
+    Ok(())
+}
+
 fn test_seal_unseal_with_pcr() {
     println!("--- Test: Seal/Unseal Operations with PCR Policy ---");
-    println!("  This seals data bound to PCR[0,7] (SHA256)");
+    println!("  This seals data bound to PCR[23] (SHA256)");
 
     let mut ctx = match TpmContext::new(None) {
         Ok(ctx) => ctx,
@@ -777,7 +873,7 @@ fn test_seal_unseal_with_pcr() {
     };
 
     let secret_data = b"PCR protected secret data!";
-    let pcr_selection = TpmlPcrSelection::single(TpmAlgId::Sha256, &[0, 7]);
+    let pcr_selection = TpmlPcrSelection::single(TpmAlgId::Sha256, &[23]);
     println!(
         "  Sealing {} bytes of data with PCR policy...",
         secret_data.len()
@@ -807,7 +903,7 @@ fn test_seal_unseal_with_pcr() {
     }
 
     println!("  Attempting to unseal data (PCRs must match)...");
-    match ctx.unseal(
+    let unsealed_ok = match ctx.unseal(
         &pub_blob,
         &priv_blob,
         parent_handle,
@@ -822,9 +918,32 @@ fn test_seal_unseal_with_pcr() {
             } else {
                 println!("✗ Data mismatch!");
             }
+            true
         }
         Err(e) => {
             println!("✗ Unseal failed (PCR mismatch?): {}", e);
+            false
+        }
+    };
+
+    if unsealed_ok {
+        println!("  Extending PCR 23 to ensure unseal fails in a different PCR environment...");
+        let extend_value = [0xA5u8; 32];
+        match ctx.pcr_extend(23, &extend_value, TpmAlgId::Sha256) {
+            Ok(()) => println!("✓ PCR_Extend succeeded"),
+            Err(e) => println!("✗ PCR_Extend failed: {}", e),
+        }
+
+        println!("  Attempting to unseal again (must FAIL after PCR change)...");
+        match ctx.unseal(
+            &pub_blob,
+            &priv_blob,
+            parent_handle,
+            &pcr_selection,
+            TpmAlgId::Sha256,
+        ) {
+            Ok(_) => println!("✗ Unseal unexpectedly succeeded after PCR change!"),
+            Err(_) => println!("✓ Unseal failed after PCR change (expected)"),
         }
     }
 
