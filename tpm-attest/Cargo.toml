@@ -21,6 +21,5 @@ tracing.workspace = true
 fs-err.workspace = true
 tpm-types.workspace = true
 dstack-types.workspace = true
-
-# Pure Rust TPM 2.0 implementation - no C library dependencies
 tpm2.workspace = true
+scale.workspace = true

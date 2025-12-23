@@ -12,6 +12,7 @@
 //! For quote verification, see the tpm-qvl crate.
 
 use anyhow::{bail, Context, Result};
+use scale::{Decode, Encode};
 use std::path::Path;
 use tracing::{debug, warn};
 
@@ -56,9 +57,7 @@ impl SealedBlob {
     }
 
     pub fn from_parts(pub_data: &[u8], priv_data: &[u8]) -> Self {
-        let mut data = Vec::with_capacity(pub_data.len() + priv_data.len());
-        data.extend_from_slice(pub_data);
-        data.extend_from_slice(priv_data);
+        let data = (pub_data, priv_data).encode();
         Self { data }
     }
 
@@ -66,22 +65,7 @@ impl SealedBlob {
         if self.data.len() < 4 {
             bail!("sealed blob too small");
         }
-
-        let pub_size = u16::from_be_bytes([self.data[0], self.data[1]]) as usize;
-        if self.data.len() < 2 + pub_size + 2 {
-            bail!("sealed blob truncated at pub");
-        }
-
-        let priv_offset = 2 + pub_size;
-        let priv_size =
-            u16::from_be_bytes([self.data[priv_offset], self.data[priv_offset + 1]]) as usize;
-        if self.data.len() < priv_offset + 2 + priv_size {
-            bail!("sealed blob truncated at priv");
-        }
-
-        let pub_data = self.data[..2 + pub_size].to_vec();
-        let priv_data = self.data[priv_offset..priv_offset + 2 + priv_size].to_vec();
-
+        let (pub_data, priv_data) = Decode::decode(&mut &self.data[..])?;
         Ok((pub_data, priv_data))
     }
 }
@@ -196,8 +180,15 @@ impl TpmContext {
 
         let sealed_blob = SealedBlob::from_parts(&pub_bytes, &priv_bytes);
 
-        if !ctx.nv_exists(nv_index)? {
-            ctx.nv_define(nv_index, sealed_blob.data.len(), true)?;
+        let needed_size = sealed_blob.data.len();
+        if ctx.nv_exists(nv_index)? {
+            let nv_public = ctx.nv_read_public(nv_index)?;
+            if (nv_public.data_size as usize) < needed_size {
+                ctx.nv_undefine(nv_index)?;
+                ctx.nv_define(nv_index, needed_size, true)?;
+            }
+        } else {
+            ctx.nv_define(nv_index, needed_size, true)?;
         }
 
         ctx.nv_write(nv_index, &sealed_blob.data)?;
@@ -220,7 +211,14 @@ impl TpmContext {
         };
 
         let sealed_blob = SealedBlob::new(sealed_data);
-        let (pub_bytes, priv_bytes) = sealed_blob.split()?;
+        let (pub_bytes, priv_bytes) = match sealed_blob.split() {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("sealed blob in NV index 0x{nv_index:08x} is invalid ({e}); regenerating");
+                let _ = ctx.nv_undefine(nv_index);
+                return Ok(None);
+            }
+        };
 
         let data = ctx.unseal(&pub_bytes, &priv_bytes, parent_handle, pcr_selection)?;
 
@@ -314,13 +312,10 @@ mod tests {
 
     #[test]
     fn test_sealed_blob_split() {
-        let pub_data = vec![0x00, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05];
-        let priv_data = vec![0x00, 0x03, 0xAA, 0xBB, 0xCC];
-        let mut blob_data = Vec::new();
-        blob_data.extend_from_slice(&pub_data);
-        blob_data.extend_from_slice(&priv_data);
+        let pub_data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
+        let priv_data = vec![0xAA, 0xBB, 0xCC];
 
-        let blob = SealedBlob::new(blob_data);
+        let blob = SealedBlob::from_parts(&pub_data, &priv_data);
         let (pub_part, priv_part) = blob.split().unwrap();
 
         assert_eq!(pub_part, pub_data);

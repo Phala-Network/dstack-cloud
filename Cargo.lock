@@ -7628,6 +7628,7 @@ dependencies = [
  "dstack-types",
  "fs-err",
  "hex",
+ "parity-scale-codec",
  "serde",
  "serde-human-bytes",
  "serde_json",

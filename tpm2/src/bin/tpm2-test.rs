@@ -59,7 +59,7 @@ fn main() {
         }
         _ => {
             eprintln!("Unknown command: {}", command);
-            eprintln!("Available commands: info, random, pcr-read, pcr-extend, nv-test, nv-full, primary, evict, seal, seal-pcr, quote, quote-ecc, all");
+            eprintln!("Available commands: info, random, pcr-read, pcr-extend, nv-test, nv-full, primary, evict, seal, seal-pcr, seal-nv, quote, quote-ecc, all");
             std::process::exit(1);
         }
     }

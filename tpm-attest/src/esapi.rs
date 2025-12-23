@@ -4,7 +4,7 @@
 
 use crate::{PcrSelection, PcrValue};
 use anyhow::{bail, Result};
-use tpm2::{TpmAlgId, TpmContext as RawTpmContext, TpmlPcrSelection};
+use tpm2::{TpmAlgId, TpmContext as RawTpmContext, TpmlPcrSelection, TpmsNvPublic};
 
 pub struct EsapiContext {
     context: RawTpmContext,
@@ -22,6 +22,11 @@ impl EsapiContext {
     /// Check if an NV index exists
     pub fn nv_exists(&mut self, index: u32) -> Result<bool> {
         self.context.nv_exists(index)
+    }
+
+    /// Read NV public area (to determine the defined size, attributes, etc.)
+    pub fn nv_read_public(&mut self, index: u32) -> Result<TpmsNvPublic> {
+        self.context.nv_read_public(index)
     }
 
     /// Read data from an NV index
