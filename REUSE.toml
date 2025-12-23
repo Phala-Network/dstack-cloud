@@ -106,11 +106,6 @@ path = "kms/auth-eth/lib/forge-std/**"
 SPDX-FileCopyrightText = "NONE"
 SPDX-License-Identifier = "Apache-2.0"
 
-[[annotations]]
-path = "mod-tdx-guest/Kconfig"
-SPDX-FileCopyrightText = "© 2022 Intel Corporation"
-SPDX-License-Identifier = "GPL-2.0-only"
-
 # Generated files
 
 [[annotations]]
