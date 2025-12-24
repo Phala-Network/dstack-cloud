@@ -12,7 +12,7 @@ use dcap_qvl::{
     quote::{EnclaveReport, Quote, Report, TDReport10, TDReport15},
     verify::VerifiedReport as TdxVerifiedReport,
 };
-use dstack_types::Platform;
+use dstack_types::{Platform, VmConfig};
 use ez_hash::{sha256, Hasher, Sha256, Sha384};
 use or_panic::ResultOrPanic;
 use scale::{Decode, Encode};
@@ -82,6 +82,7 @@ impl AttestationMode {
                 }
                 bail!("Unsupported platform: GCP(-tdx)");
             }
+            Platform::AwsNitroEnclave => Ok(Self::DstackNitro),
         }
     }
 
@@ -344,9 +345,13 @@ struct Mrs {
 }
 
 impl<T: GetPpid> Attestation<T> {
-    fn decode_mr_tpm(&self, boottime_mr: bool, mr_key_provider: &[u8]) -> Result<Mrs> {
-        let os_image_hash = self.find_event_payload("os-image-hash").unwrap_or_default();
-        let mr_system = sha256([&os_image_hash, mr_key_provider]);
+    fn decode_mr_gcp_tpm(
+        &self,
+        boottime_mr: bool,
+        mr_key_provider: &[u8],
+        os_image_hash: &[u8],
+    ) -> Result<Mrs> {
+        let mr_system = sha256([os_image_hash, mr_key_provider]);
         let tpm_quote = self.tpm_quote.as_ref().context("TPM quote not found")?;
         let pcr0 = tpm_quote
             .pcr_values
@@ -361,6 +366,32 @@ impl<T: GetPpid> Attestation<T> {
         let runtime_pcr =
             self.replay_runtime_events::<Sha256>(boottime_mr.then_some("boot-mr-done"));
         let mr_aggregated = sha256([&pcr0.value[..], &pcr2.value, &runtime_pcr]);
+        Ok(Mrs {
+            mr_system,
+            mr_aggregated,
+        })
+    }
+
+    fn decode_mr_nitro_tpm(
+        &self,
+        _boottime_mr: bool,
+        mr_key_provider: &[u8],
+        os_image_hash: &[u8],
+    ) -> Result<Mrs> {
+        let mr_system = sha256([os_image_hash, mr_key_provider]);
+        let tpm_quote = self.tpm_quote.as_ref().context("TPM quote not found")?;
+        let pcr0 = tpm_quote
+            .pcr_values
+            .iter()
+            .find(|p| p.index == 0)
+            .context("PCR 0 not found")?;
+        let pcr2 = tpm_quote
+            .pcr_values
+            .iter()
+            .find(|p| p.index == 2)
+            .context("PCR 2 not found")?;
+        let todo = "Maybe more pcrs";
+        let mr_aggregated = sha256([&pcr0.value[..], &pcr2.value]);
         Ok(Mrs {
             mr_system,
             mr_aggregated,
@@ -406,6 +437,15 @@ impl<T: GetPpid> Attestation<T> {
         })
     }
 
+    fn decode_os_image_hash(&self) -> Result<Vec<u8>> {
+        if self.config.is_empty() {
+            return Ok(vec![]);
+        }
+        let vm_config: VmConfig =
+            serde_json::from_str(&self.config).context("Failed to parse vm config")?;
+        Ok(vm_config.os_image_hash)
+    }
+
     /// Decode the app info from the event log
     pub fn decode_app_info(&self, boottime_mr: bool) -> Result<AppInfo> {
         let key_provider_info = if boottime_mr {
@@ -418,20 +458,27 @@ impl<T: GetPpid> Attestation<T> {
         } else {
             sha256(&key_provider_info)
         };
+        let os_image_hash = self
+            .decode_os_image_hash()
+            .context("Failed to decode os image hash")?;
         let mrs = match self.mode {
             AttestationMode::DstackTdx => self.decode_mr_tdx(boottime_mr, &mr_key_provider)?,
-            AttestationMode::GcpTdx => self.decode_mr_tpm(boottime_mr, &mr_key_provider)?,
-            AttestationMode::DstackNitro => bail!("Nitro attestation is not supported"),
+            AttestationMode::GcpTdx => {
+                self.decode_mr_gcp_tpm(boottime_mr, &mr_key_provider, &os_image_hash)?
+            }
+            AttestationMode::DstackNitro => {
+                self.decode_mr_nitro_tpm(boottime_mr, &mr_key_provider, &os_image_hash)?
+            }
         };
         Ok(AppInfo {
             app_id: self.find_event_payload("app-id").unwrap_or_default(),
             compose_hash: self.find_event_payload("compose-hash").unwrap_or_default(),
             instance_id: self.find_event_payload("instance-id").unwrap_or_default(),
-            os_image_hash: self.find_event_payload("os-image-hash").unwrap_or_default(),
             device_id: sha256(self.report.get_ppid()).to_vec(),
             mr_system: mrs.mr_system,
             mr_aggregated: mrs.mr_aggregated,
             key_provider_info,
+            os_image_hash,
         })
     }
 }
@@ -659,7 +706,14 @@ impl Attestation {
                 }
             }
             AttestationMode::DstackNitro => {
-                bail!("Nitro not supported");
+                let Some(tpm_report) = &tpm_report else {
+                    bail!("TPM report is missing in dstack-nitro mode");
+                };
+                // TPM quote the TDX quote
+                let qualifying_data = sha256(self.report_data);
+                if qualifying_data != tpm_report.attest.qualified_data[..] {
+                    bail!("tpm qualified_data mismatch");
+                }
             }
         }
         let report = DstackVerifiedReport {

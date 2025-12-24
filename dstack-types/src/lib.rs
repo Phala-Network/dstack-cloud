@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::path::Path;
+
 use scale::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use serde_human_bytes as hex_bytes;
@@ -141,8 +143,7 @@ pub struct SysConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct VmConfig {
-    pub spec_version: u32,
-    #[serde(with = "hex_bytes")]
+    #[serde(with = "hex_bytes", default)]
     pub os_image_hash: Vec<u8>,
     #[serde(default)]
     pub cpu_count: u32,
@@ -272,11 +273,18 @@ pub enum Platform {
     Dstack,
     /// Google Cloud Platform
     Gcp,
+    /// AWS Nitro Enclave
+    AwsNitroEnclave,
 }
 
 impl Platform {
     /// Detect platform from system DMI information
     pub fn detect() -> Option<Self> {
+        // Nitro Enclave: NSM device exists only inside enclave
+        if Path::new("/dev/nsm").exists() {
+            return Some(Self::AwsNitroEnclave);
+        }
+
         if let Ok(board_name) = std::fs::read_to_string("/sys/class/dmi/id/product_name") {
             match board_name.trim() {
                 "dstack" | "qemu" => return Some(Self::Dstack),
@@ -297,6 +305,7 @@ impl Platform {
         match self {
             Self::Dstack => "dstack",
             Self::Gcp => "gcp",
+            Self::AwsNitroEnclave => "aws-nitro-enclave",
         }
     }
 }

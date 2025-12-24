@@ -22,11 +22,13 @@ use serde::{Deserialize, Serialize};
 /// Subject: CN=EK/AK CA Root, OU=Google Cloud, O=Google LLC, L=Mountain View, ST=California, C=US
 /// Valid: 2022-07-08 to 2122-07-08 (100 years)
 pub const GCP_ROOT_CA: &str = include_str!("../certs/gcp-root-ca.pem");
+pub const AWS_NITRO_ENCLAVES_ROOT_G1: &str = include_str!("../certs/AWS_NitroEnclaves_Root-G1.pem");
 
 /// Get TPM root CA certificate for the given platform
 pub fn get_root_ca(platform: Platform) -> Result<&'static str> {
     match platform {
         Platform::Gcp => Ok(GCP_ROOT_CA),
+        Platform::AwsNitroEnclave => Ok(AWS_NITRO_ENCLAVES_ROOT_G1),
         Platform::Dstack => bail!("dstack platform does not use TPM attestation"),
     }
 }

@@ -497,7 +497,10 @@ impl CvmVerifier {
                 self.verify_os_image_hash_for_dstack_tdx(&vm_config, attestation, debug, details)
                     .await?;
             }
-            AttestationMode::DstackNitro => bail!("Nitro not supported"),
+            AttestationMode::DstackNitro => {
+                let todo = "Implement it";
+                bail!("Nitro not supported");
+            }
         }
         Ok(vm_config)
     }

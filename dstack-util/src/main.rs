@@ -87,6 +87,8 @@ enum Commands {
     AttestJson(AttestJsonArgs),
     /// Strip attestation for certificate embedding
     AttestStrip(AttestStripArgs),
+    /// Get app keys from a KMS server
+    GetKeys(GetKeysArgs),
 }
 
 #[derive(Parser)]
@@ -331,6 +333,22 @@ struct AttestStripArgs {
     output: Option<PathBuf>,
 }
 
+#[derive(Parser)]
+/// Get app keys from a KMS server
+struct GetKeysArgs {
+    /// KMS server URL (e.g., https://kms.example.com)
+    #[arg(short, long)]
+    kms_url: String,
+
+    /// PCCS URL for quote verification (optional)
+    #[arg(short, long)]
+    pccs_url: Option<String>,
+
+    /// Output file path (default: stdout as JSON)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
 fn pad64(data: &[u8]) -> Result<[u8; 64]> {
     if data.len() > 64 {
         anyhow::bail!("report_data must be at most 64 bytes");
@@ -492,6 +510,87 @@ fn cmd_attest_strip(args: AttestStripArgs) -> Result<()> {
         .output
         .unwrap_or_else(|| PathBuf::from("attestation.strip.bin"));
     fs::write(&output, stripped.to_scale()).context("Failed to write stripped attestation")?;
+    Ok(())
+}
+
+async fn cmd_get_keys(args: GetKeysArgs) -> Result<()> {
+    use dstack_kms_rpc::kms_client::KmsClient;
+    use ra_rpc::client::{RaClient, RaClientConfig};
+    use ra_tls::cert::generate_ra_cert;
+
+    let kms_url = if args.kms_url.ends_with("/prpc") {
+        args.kms_url.clone()
+    } else {
+        format!("{}/prpc", args.kms_url.trim_end_matches('/'))
+    };
+
+    // Step 1: Get temporary CA certificate
+    eprintln!("Connecting to KMS: {kms_url}");
+    let tmp_ca = {
+        let client = RaClient::new(kms_url.clone(), true)?;
+        let kms_client = KmsClient::new(client);
+        kms_client
+            .get_temp_ca_cert()
+            .await
+            .context("Failed to get temp CA cert")?
+    };
+
+    // Step 2: Generate RA-TLS client certificate
+    let cert_pair = generate_ra_cert(tmp_ca.temp_ca_cert.clone(), tmp_ca.temp_ca_key.clone())
+        .context("Failed to generate RA cert")?;
+
+    // Step 3: Create authenticated client and request app keys
+    let ra_client = RaClientConfig::builder()
+        .tls_no_check(false)
+        .tls_built_in_root_certs(false)
+        .remote_uri(kms_url.clone())
+        .tls_client_cert(cert_pair.cert_pem)
+        .tls_client_key(cert_pair.key_pem)
+        .tls_ca_cert(tmp_ca.ca_cert.clone())
+        .maybe_pccs_url(args.pccs_url.clone())
+        .build()
+        .into_client()
+        .context("Failed to create RA client")?;
+
+    let kms_client = KmsClient::new(ra_client);
+    let response = kms_client
+        .get_app_key(dstack_kms_rpc::GetAppKeyRequest {
+            api_version: 1,
+            vm_config: "".to_string(),
+        })
+        .await
+        .context("Failed to get app key")?;
+
+    // Step 4: Build AppKeys structure
+    let (_, ca_pem) = x509_parser::pem::parse_x509_pem(tmp_ca.ca_cert.as_bytes())
+        .context("Failed to parse CA cert")?;
+    let x509 = ca_pem.parse_x509().context("Failed to parse CA cert")?;
+    let root_pubkey = x509.public_key().raw.to_vec();
+
+    let keys = utils::AppKeys {
+        ca_cert: tmp_ca.ca_cert,
+        disk_crypt_key: response.disk_crypt_key,
+        env_crypt_key: response.env_crypt_key,
+        k256_key: response.k256_key,
+        k256_signature: response.k256_signature,
+        gateway_app_id: response.gateway_app_id,
+        key_provider: KeyProvider::Kms {
+            url: kms_url,
+            pubkey: root_pubkey,
+            tmp_ca_key: tmp_ca.temp_ca_key,
+            tmp_ca_cert: tmp_ca.temp_ca_cert,
+        },
+    };
+
+    // Step 5: Output result
+    let json = serde_json::to_string_pretty(&keys).context("Failed to serialize app keys")?;
+    if let Some(output_path) = args.output {
+        fs::write(&output_path, &json).context("Failed to write app keys")?;
+        eprintln!("App keys written to: {}", output_path.display());
+    } else {
+        println!("{json}");
+    }
+
     Ok(())
 }
 
@@ -1161,6 +1260,9 @@ async fn main() -> Result<()> {
         }
         Commands::AttestStrip(args) => {
             cmd_attest_strip(args)?;
+        }
+        Commands::GetKeys(args) => {
+            cmd_get_keys(args).await?;
         }
     }
 
