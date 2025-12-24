@@ -134,7 +134,7 @@ pub struct SysConfig {
     pub gateway_urls: Vec<String>,
     pub pccs_url: Option<String>,
     pub docker_registry: Option<String>,
-    pub host_api_url: String,
+    pub host_api_url: Option<String>,
     // JSON serialized VmConfig
     pub vm_config: String,
 }
