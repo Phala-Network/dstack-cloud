@@ -122,7 +122,7 @@ dstack uses encrypted environment variables to allow app developers to securely 
 This file is not measured to RTMRs. But it is highly recommended to add application-specific integrity checks on encrypted environment variables at the application layer. See [security-guide.md](security-guide.md) for more details.
 
 ### .user-config
-This is an optional application-specific configuration file that applications inside the CVM can access. dstack OS simply stores it at /dstack/user-config without any measurement or additional processing.
+This is an optional application-specific configuration file that applications inside the CVM can access. dstack OS simply stores it at /dstack/.host-shared/.user-config without any measurement or additional processing.
 
 Application developers should perform integrity checks on user_config at the application layer if necessary.
 
