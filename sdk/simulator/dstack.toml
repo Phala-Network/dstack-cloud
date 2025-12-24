@@ -17,8 +17,6 @@ sys_config_file = "sys-config.json"
 
 [default.core.simulator]
 enabled = true
-quote_file = "quote.hex"
-event_log_file = "eventlog.json"
 attestation_file = "attestation.bin"
 
 [internal-v0]

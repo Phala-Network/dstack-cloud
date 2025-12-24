@@ -449,7 +449,7 @@ func TestInfo(t *testing.T) {
 }
 
 func TestGetKeySignatureVerification(t *testing.T) {
-	expectedAppPubkey, _ := hex.DecodeString("02b85cceca0c02d878f0ebcda72a97469a472416eb6faf3c4807642132f9786810")
+	expectedAppPubkey, _ := hex.DecodeString("02818494263695e8839122dbd88e281d7380622999df4e60a14befa0f2d096fc7c")
 	expectedKmsPubkey, _ := hex.DecodeString("02cad3a8bb11c5c0858fb3e402048b5137457039d577986daade678ed4b4ab1b9b")
 
 	client := dstack.NewDstackClient()

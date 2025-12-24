@@ -447,18 +447,20 @@ fn simulate_quote(
     report_data: [u8; 64],
     vm_config: &str,
 ) -> Result<GetQuoteResponse> {
-    let quote_file =
-        fs::read_to_string(&config.simulator.quote_file).context("Failed to read quote file")?;
-    let mut quote = hex::decode(quote_file.trim()).context("Failed to decode quote")?;
-    let event_log = fs::read_to_string(&config.simulator.event_log_file)
-        .context("Failed to read event log file")?;
-    if quote.len() < 632 {
-        return Err(anyhow::anyhow!("Quote is too short"));
-    }
-    quote[568..632].copy_from_slice(&report_data);
+    let attestation_bytes = fs::read(&config.simulator.attestation_file)
+        .context("Failed to read simulator attestation file")?;
+    let VersionedAttestation::V0 { attestation } =
+        VersionedAttestation::from_scale(&attestation_bytes)
+            .context("Failed to decode simulator attestation")?;
+    let Some(mut quote) = attestation.tdx_quote else {
+        return Err(anyhow::anyhow!("Quote not found"));
+    };
+
+    quote.quote[568..632].copy_from_slice(&report_data);
     Ok(GetQuoteResponse {
-        quote,
-        event_log,
+        quote: quote.quote,
+        event_log: serde_json::to_string(&quote.event_log)
+            .context("Failed to serialize event log")?,
         report_data: report_data.to_vec(),
         vm_config: vm_config.to_string(),
     })
