@@ -27,6 +27,7 @@ sha2.workspace = true
 sha3.workspace = true
 tdx-attest.workspace = true
 tpm-attest.workspace = true
+nsm-attest.workspace = true
 tpm-qvl.workspace = true
 tpm-types.workspace = true
 
