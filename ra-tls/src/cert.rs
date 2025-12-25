@@ -28,9 +28,9 @@ use crate::oids::{
     PHALA_RATLS_TDX_QUOTE,
 };
 use crate::traits::CertExt;
-use dstack_attest::attestation::{
-    Attestation, AttestationMode, QuoteContentType, VersionedAttestation,
-};
+#[cfg(feature = "quote")]
+use dstack_attest::attestation::QuoteContentType;
+use dstack_attest::attestation::{Attestation, AttestationQuote, VersionedAttestation};
 
 /// A CA certificate and private key.
 pub struct CaCert {
@@ -337,12 +337,9 @@ impl<Key> CertRequest<'_, Key> {
         }
         if let Some(ver_att) = self.attestation {
             let VersionedAttestation::V0 { attestation } = &ver_att;
-            match attestation.mode {
-                AttestationMode::DstackTdx => {
+            match &attestation.quote {
+                AttestationQuote::DstackTdx(tdx_quote) => {
                     // For backward compatibility, we serialize the quote to the classic oids.
-                    let Some(tdx_quote) = &attestation.tdx_quote else {
-                        bail!("missing tdx quote")
-                    };
                     let event_log = serde_json::to_vec(&tdx_quote.event_log)
                         .context("Failed to serialize event log")?;
                     add_ext(&mut params, PHALA_RATLS_TDX_QUOTE, &tdx_quote.quote);
@@ -480,6 +477,7 @@ pub fn decompress_ext_value(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Generate a certificate with RA-TLS quote and event log.
+#[cfg(feature = "quote")]
 pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertPair> {
     use rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256};
 

@@ -55,7 +55,7 @@ impl HostApi {
     pub async fn notify(&self, event: &str, payload: &str) -> Result<()> {
         match Platform::detect_or_dstack() {
             Platform::Dstack => {}
-            Platform::Gcp | Platform::AwsNitroEnclave => {
+            Platform::Gcp | Platform::NitroEnclave => {
                 // Skip notify on unsupported platforms
                 return Ok(());
             }

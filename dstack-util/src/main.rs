@@ -426,9 +426,9 @@ fn cmd_attest_info(args: AttestInfoArgs) -> Result<()> {
     match attestation {
         VersionedAttestation::V0 { attestation } => {
             println!("version: V0");
-            println!("mode: {:?}", attestation.mode);
+            println!("mode: {:?}", attestation.quote.mode());
             println!("config_bytes: {}", attestation.config.len());
-            match attestation.tdx_quote {
+            match attestation.tdx_quote() {
                 Some(tdx) => {
                     let event_log_json = serde_json::to_vec(&tdx.event_log)
                         .context("Failed to serialize event log")?;
@@ -442,7 +442,7 @@ fn cmd_attest_info(args: AttestInfoArgs) -> Result<()> {
                     println!("event_log_json_bytes: 0");
                 }
             }
-            match attestation.tpm_quote {
+            match attestation.tpm_quote() {
                 Some(tpm) => {
                     let tpm_bytes = tpm.encode();
                     println!("tpm_quote_bytes: {}", tpm_bytes.len());
@@ -465,16 +465,15 @@ fn cmd_attest_json(args: AttestJsonArgs) -> Result<()> {
 
     let json = match attestation {
         VersionedAttestation::V0 { attestation } => {
-            let mode = serde_json::to_value(attestation.mode)
-                .context("Failed to serialize attestation mode")?;
-            let tdx_quote = match attestation.tdx_quote {
+            let mode = attestation.quote.mode().as_str();
+            let tdx_quote = match attestation.tdx_quote() {
                 Some(tdx) => serde_json::json!({
-                    "quote": hex::encode(tdx.quote),
+                    "quote": hex::encode(&tdx.quote),
                     "event_log": tdx.event_log,
                 }),
                 None => serde_json::Value::Null,
             };
-            let tpm_quote = match attestation.tpm_quote {
+            let tpm_quote = match attestation.tpm_quote() {
                 Some(tpm) => serde_json::to_value(tpm).context("Failed to serialize TPM quote")?,
                 None => serde_json::Value::Null,
             };

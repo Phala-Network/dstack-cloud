@@ -28,7 +28,7 @@ pub const AWS_NITRO_ENCLAVES_ROOT_G1: &str = include_str!("../certs/AWS_NitroEnc
 pub fn get_root_ca(platform: Platform) -> Result<&'static str> {
     match platform {
         Platform::Gcp => Ok(GCP_ROOT_CA),
-        Platform::AwsNitroEnclave => Ok(AWS_NITRO_ENCLAVES_ROOT_G1),
+        Platform::NitroEnclave => Ok(AWS_NITRO_ENCLAVES_ROOT_G1),
         Platform::Dstack => bail!("dstack platform does not use TPM attestation"),
     }
 }

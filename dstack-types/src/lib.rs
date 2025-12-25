@@ -274,7 +274,7 @@ pub enum Platform {
     /// Google Cloud Platform
     Gcp,
     /// AWS Nitro Enclave
-    AwsNitroEnclave,
+    NitroEnclave,
 }
 
 impl Platform {
@@ -282,7 +282,7 @@ impl Platform {
     pub fn detect() -> Option<Self> {
         // Nitro Enclave: NSM device exists only inside enclave
         if Path::new("/dev/nsm").exists() {
-            return Some(Self::AwsNitroEnclave);
+            return Some(Self::NitroEnclave);
         }
 
         if let Ok(board_name) = std::fs::read_to_string("/sys/class/dmi/id/product_name") {
@@ -305,7 +305,7 @@ impl Platform {
         match self {
             Self::Dstack => "dstack",
             Self::Gcp => "gcp",
-            Self::AwsNitroEnclave => "aws-nitro-enclave",
+            Self::NitroEnclave => "aws-nitro-enclave",
         }
     }
 }

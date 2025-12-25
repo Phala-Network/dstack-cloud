@@ -165,8 +165,7 @@ pub async fn get_info(state: &AppState, external: bool) -> Result<AppInfo> {
         .decode_app_info(false)
         .context("Failed to decode app info")?;
     let event_log = attestation
-        .tdx_quote
-        .as_ref()
+        .tdx_quote()
         .map(|q| &q.event_log[..])
         .unwrap_or_default();
     let tcb_info = if hide_tcb_info {
@@ -452,13 +451,14 @@ fn simulate_quote(
     let VersionedAttestation::V0 { attestation } =
         VersionedAttestation::from_scale(&attestation_bytes)
             .context("Failed to decode simulator attestation")?;
-    let Some(mut quote) = attestation.tdx_quote else {
+    let mut attestation = attestation;
+    let Some(quote) = attestation.tdx_quote_mut() else {
         return Err(anyhow::anyhow!("Quote not found"));
     };
 
     quote.quote[568..632].copy_from_slice(&report_data);
     Ok(GetQuoteResponse {
-        quote: quote.quote,
+        quote: quote.quote.to_vec(),
         event_log: serde_json::to_string(&quote.event_log)
             .context("Failed to serialize event log")?,
         report_data: report_data.to_vec(),

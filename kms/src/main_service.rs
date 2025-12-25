@@ -11,7 +11,6 @@ use dstack_kms_rpc::{
     GetMetaResponse, GetTempCaCertResponse, KmsKeyResponse, KmsKeys, PublicKeyResponse,
     SignCertRequest, SignCertResponse,
 };
-use dstack_types::VmConfig;
 use dstack_verifier::{CvmVerifier, VerificationDetails};
 use fs_err as fs;
 use k256::ecdsa::SigningKey;
@@ -23,7 +22,7 @@ use ra_tls::{
 };
 use scale::Decode;
 use sha2::Digest;
-use tracing::{debug, info};
+use tracing::info;
 use upgrade_authority::BootInfo;
 
 use crate::{
@@ -92,7 +91,6 @@ pub struct RpcHandler {
 struct BootConfig {
     boot_info: BootInfo,
     gateway_app_id: String,
-    os_image_hash: Vec<u8>,
 }
 
 impl RpcHandler {
@@ -170,17 +168,15 @@ impl RpcHandler {
         use_boottime_mr: bool,
         vm_config_str: &str,
     ) -> Result<BootConfig> {
-        let Some(tdx_report) = &att.report.tdx_report else {
+        let todo = "Allow non tdx attestation";
+        let Some(tdx_report) = &att.report.tdx_report() else {
             bail!("No TD report in attestation");
         };
-        debug!("vm_config: {vm_config_str}");
-        let vm_config: VmConfig =
-            serde_json::from_str(vm_config_str).context("Failed to decode VM config")?;
-        let app_info = att.decode_app_info(use_boottime_mr)?;
-        let os_image_hash = vm_config.os_image_hash.clone();
+        let app_info = att.decode_app_info_ex(use_boottime_mr, vm_config_str)?;
+        let todo = "Add attestation mode in BootInfo";
         let boot_info = BootInfo {
             mr_aggregated: app_info.mr_aggregated.to_vec(),
-            os_image_hash: os_image_hash.clone(),
+            os_image_hash: app_info.os_image_hash,
             mr_system: app_info.mr_system.to_vec(),
             app_id: app_info.app_id,
             compose_hash: app_info.compose_hash,
@@ -205,7 +201,6 @@ impl RpcHandler {
         Ok(BootConfig {
             boot_info,
             gateway_app_id: response.gateway_app_id,
-            os_image_hash,
         })
     }
 
@@ -238,7 +233,6 @@ impl KmsRpc for RpcHandler {
         let BootConfig {
             boot_info,
             gateway_app_id,
-            os_image_hash,
         } = self
             .ensure_app_boot_allowed(&request.vm_config)
             .await
@@ -271,7 +265,7 @@ impl KmsRpc for RpcHandler {
             k256_signature,
             tproxy_app_id: gateway_app_id.clone(),
             gateway_app_id,
-            os_image_hash,
+            os_image_hash: boot_info.os_image_hash,
         })
     }
 
