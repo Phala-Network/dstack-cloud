@@ -72,6 +72,12 @@ path = [
     "cc-eventlog/samples/tpm_eventlog.bin",
     "tpm-attest/tests/tpm_quote_sample.bin",
     "tpm-qvl/certs/gcp-root-ca.pem",
+    "dstack-attest/tests/nitro_attestation.bin",
+    "dstack-attest/tests/nitro_attestation_dbg.bin",
+    "nsm-attest/tests/nitro_attestation.bin",
+    "nsm-qvl/tests/nitro_attestation.bin",
+    "nsm-qvl/certs/AWS_NitroEnclaves_Root-G1.pem",
+    "tpm-qvl/certs/AWS_NitroEnclaves_Root-G1.pem",
 ]
 SPDX-FileCopyrightText = "NONE"
 SPDX-License-Identifier = "CC0-1.0"

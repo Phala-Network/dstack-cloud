@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (c) 2024-2025 The Project Contributors
+// SPDX-License-Identifier: Apache-2.0
 // Test for NSM attestation document parsing
 use nsm_attest::AttestationDocument;
 
