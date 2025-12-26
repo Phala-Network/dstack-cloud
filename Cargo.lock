@@ -2190,6 +2190,7 @@ dependencies = [
  "sha2 0.10.9",
  "sha3",
  "tdx-attest",
+ "tokio",
  "tpm-attest",
  "tpm-qvl",
  "tpm-types",
@@ -4669,15 +4670,19 @@ version = "0.5.5"
 dependencies = [
  "anyhow",
  "ciborium",
+ "dcap-qvl-webpki",
  "hex",
  "nsm-attest",
  "p384",
  "pem",
+ "reqwest",
  "rustls-pki-types",
  "rustls-webpki 0.103.8",
  "serde",
  "sha2 0.10.9",
+ "tokio",
  "tracing",
+ "tracing-subscriber",
  "x509-parser",
 ]
 

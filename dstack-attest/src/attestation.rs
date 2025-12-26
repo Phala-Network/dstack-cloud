@@ -778,6 +778,7 @@ impl Attestation {
             AttestationQuote::DstackNitroEnclave(quote) => {
                 let report = self
                     .verify_nitro_enclave_with_time(quote, now)
+                    .await
                     .context("Failed to verify Nitro Enclave")?;
                 DstackVerifiedReport::DstackNitroEnclave(report)
             }
@@ -821,15 +822,17 @@ impl Attestation {
     /// 1. Verifies COSE Sign1 signature using ECDSA P-384 with SHA-384
     /// 2. Verifies certificate chain from attestation document to AWS Nitro root CA
     /// 3. Validates user_data matches expected report_data
-    fn verify_nitro_enclave_with_time(
+    async fn verify_nitro_enclave_with_time(
         &self,
         nsm_quote: &DstackNitroQuote,
         now: Option<SystemTime>,
     ) -> Result<NitroVerifiedReport> {
         // Verify COSE signature and certificate chain using nsm-qvl
+        // CRL fetch is unreliable (e.g. 403 from S3), so keep it disabled here by default.
         let verified_report = nsm_qvl::verify_attestation(
             &nsm_quote.nsm_quote,
             nsm_qvl::AWS_NITRO_ENCLAVES_ROOT_G1,
+            None,
             now,
         )
         .context("NSM attestation verification failed")?;

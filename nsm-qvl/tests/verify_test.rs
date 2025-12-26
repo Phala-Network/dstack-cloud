@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2025 The Project Contributors
 // SPDX-License-Identifier: Apache-2.0
 // Test for NSM attestation verification
-use nsm_qvl::{verify_attestation, AttestationDocument, CoseSign1};
+use nsm_qvl::{AttestationDocument, CoseSign1};
 use std::io::Cursor;
 
 // Real attestation captured from Nitro Enclave
@@ -66,44 +66,30 @@ fn test_parse_attestation_document() {
     assert!(!doc.cabundle.is_empty());
 }
 
-#[test]
-fn test_verify_attestation_full() {
+#[tokio::test]
+async fn test_verify_attestation_full() {
+    tracing_subscriber::fmt::try_init().ok();
+
     let cose_data = extract_cose_sign1(ATTESTATION_BIN);
 
-    // This test verifies the full attestation:
-    // 1. COSE Sign1 signature verification
-    // 2. Certificate chain verification against AWS Nitro root CA
-    let result = verify_attestation(&cose_data, nsm_qvl::AWS_NITRO_ENCLAVES_ROOT_G1, None);
+    let report = nsm_qvl::verify_attestation_with_crl(
+        &cose_data,
+        nsm_qvl::AWS_NITRO_ENCLAVES_ROOT_G1,
+        std::env::var("TEST_FETCH_CRL").is_ok(),
+        None,
+    )
+    .await
+    .unwrap();
+    println!("✓ Attestation verified successfully!");
+    println!("  Module ID: {}", report.module_id);
+    println!("  Digest: {}", report.digest);
+    println!("  Timestamp: {}", report.timestamp);
+    println!("  PCRs: {} entries", report.pcrs.len());
 
-    match result {
-        Ok(report) => {
-            println!("✓ Attestation verified successfully!");
-            println!("  Module ID: {}", report.module_id);
-            println!("  Digest: {}", report.digest);
-            println!("  Timestamp: {}", report.timestamp);
-            println!("  PCRs: {} entries", report.pcrs.len());
-
-            // Print non-zero PCR values
-            for (idx, value) in &report.pcrs {
-                if !value.iter().all(|&b| b == 0) {
-                    println!("  PCR{}: {:02x?}", idx, value);
-                }
-            }
-        }
-        Err(e) => {
-            // The test attestation may be expired or have other issues
-            // Print the error for debugging but don't fail the test
-            // since the attestation document is from a real enclave
-            // and may have time-based validity constraints
-            println!(
-                "Attestation verification failed (may be expected for old attestations): {:#}",
-                e
-            );
-
-            // Still verify we can parse the structure
-            let cose = CoseSign1::from_bytes(&cose_data).expect("Should parse COSE");
-            let _doc = AttestationDocument::from_cbor(&cose.payload)
-                .expect("Should parse attestation document");
+    // Print non-zero PCR values
+    for (idx, value) in &report.pcrs {
+        if !value.iter().all(|&b| b == 0) {
+            println!("  PCR{idx}: {value:02x?}");
         }
     }
 }

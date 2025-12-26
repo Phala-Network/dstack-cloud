@@ -38,3 +38,4 @@ quote = []
 
 [dev-dependencies]
 futures = { workspace = true }
+tokio = { workspace = true, features = ["full"] }

@@ -24,9 +24,22 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::{collections::BTreeMap, io::Cursor};
 
+pub use collateral::{get_collateral, get_collateral_and_verify};
+
 mod verify;
 
-pub use verify::{verify_attestation, verify_attestation_with_ca, NsmVerifiedReport};
+pub use verify::{
+    verify_attestation, verify_attestation_with_ca, verify_attestation_with_collateral,
+    verify_attestation_with_crl, NsmVerifiedReport,
+};
+
+#[derive(Debug, Clone)]
+pub struct NsmCollateral {
+    /// All CRLs extracted from device-provided cert chain
+    pub crls: Vec<Vec<u8>>,
+    /// Root CA CRL extracted from verifier-provided root CA
+    pub root_ca_crl: Option<Vec<u8>>,
+}
 
 /// AWS Nitro Enclaves Root CA certificate (G1)
 ///
@@ -227,3 +240,5 @@ impl AttestationDocument {
         Ok(doc)
     }
 }
+
+pub mod collateral;

@@ -5,15 +5,14 @@
 //! Integration test: verify Nitro Enclave attestation end-to-end
 
 use dstack_attest::attestation::{AttestationQuote, DstackVerifiedReport, VersionedAttestation};
-use futures::executor::block_on;
 use nsm_qvl::{AttestationDocument, CoseSign1};
 use std::time::{Duration, SystemTime};
 
 // Real Nitro Enclave attestation captured from an enclave
 const NITRO_ATTESTATION_BIN: &[u8] = include_bytes!("nitro_attestation.bin");
 
-#[test]
-fn verify_nitro_attestation_bin() {
+#[tokio::test]
+async fn verify_nitro_attestation_bin() {
     // Decode VersionedAttestation from SCALE
     let versioned = VersionedAttestation::from_scale(NITRO_ATTESTATION_BIN)
         .expect("decode VersionedAttestation");
@@ -39,7 +38,10 @@ fn verify_nitro_attestation_bin() {
         }
         _ => panic!("unexpected quote type"),
     };
-    let verified = block_on(attestation.verify_with_time(None, Some(fixed_now))).unwrap();
+    let verified = attestation
+        .verify_with_time(None, Some(fixed_now))
+        .await
+        .unwrap();
     let DstackVerifiedReport::DstackNitroEnclave(report) = verified.report else {
         panic!("Nitro attestation verification failed");
     };

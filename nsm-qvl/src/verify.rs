@@ -11,10 +11,10 @@ use p384::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
 use rustls_pki_types::{CertificateDer, UnixTime};
 use sha2::{Digest, Sha384};
 use tracing::debug;
-use webpki::EndEntityCert;
+use webpki::{BorrowedCertRevocationList, CertRevocationList, EndEntityCert};
 use x509_parser::prelude::*;
 
-use crate::{AttestationDocument, CoseSign1};
+use crate::{AttestationDocument, CoseSign1, NsmCollateral};
 
 const DIGEST_SHA384: &str = "SHA384";
 const PCR_SHA384_LEN: usize = 48;
@@ -42,8 +42,9 @@ pub struct NsmVerifiedReport {
 pub fn verify_attestation_with_ca(
     cose_sign1_bytes: &[u8],
     root_ca_pem: &str,
+    collateral: Option<&NsmCollateral>,
 ) -> Result<NsmVerifiedReport> {
-    verify_attestation(cose_sign1_bytes, root_ca_pem, None)
+    verify_attestation(cose_sign1_bytes, root_ca_pem, collateral, None)
 }
 
 /// Verify Nitro attestation with custom root CA and custom time (for testing)
@@ -52,6 +53,7 @@ pub fn verify_attestation_with_ca(
 pub fn verify_attestation(
     cose_sign1_bytes: &[u8],
     root_ca_pem: &str,
+    collateral: Option<&NsmCollateral>,
     now: Option<SystemTime>,
 ) -> Result<NsmVerifiedReport> {
     let now = now.unwrap_or_else(SystemTime::now);
@@ -65,7 +67,7 @@ pub fn verify_attestation(
     let doc = AttestationDocument::from_cbor(&cose.payload)
         .context("Failed to parse attestation document")?;
     validate_attestation_document(&doc).context("Attestation document validation failed")?;
-    verify_certificate_chain(&doc, root_ca_pem, Some(now))
+    verify_certificate_chain(&doc, root_ca_pem, collateral, Some(now))
         .context("Certificate chain verification failed")?;
     verify_cose_signature(&cose, &doc.certificate).context("COSE signature verification failed")?;
 
@@ -80,10 +82,34 @@ pub fn verify_attestation(
     })
 }
 
+pub fn verify_attestation_with_collateral(
+    cose_sign1_bytes: &[u8],
+    root_ca_pem: &str,
+    collateral: &NsmCollateral,
+    now: Option<SystemTime>,
+) -> Result<NsmVerifiedReport> {
+    verify_attestation(cose_sign1_bytes, root_ca_pem, Some(collateral), now)
+}
+
+pub async fn verify_attestation_with_crl(
+    cose_sign1_bytes: &[u8],
+    root_ca_pem: &str,
+    enable_crl: bool,
+    now: Option<SystemTime>,
+) -> Result<NsmVerifiedReport> {
+    if enable_crl {
+        let collateral = crate::get_collateral(cose_sign1_bytes, root_ca_pem).await?;
+        verify_attestation(cose_sign1_bytes, root_ca_pem, Some(&collateral), now)
+    } else {
+        verify_attestation(cose_sign1_bytes, root_ca_pem, None, now)
+    }
+}
+
 /// Verify the certificate chain from attestation document
 fn verify_certificate_chain(
     doc: &AttestationDocument,
     root_ca_pem: &str,
+    collateral: Option<&NsmCollateral>,
     now_override: Option<SystemTime>,
 ) -> Result<()> {
     // Parse root CA from PEM
@@ -111,30 +137,10 @@ fn verify_certificate_chain(
     let leaf_cert =
         EndEntityCert::try_from(&leaf_cert_der).context("Failed to parse leaf certificate")?;
 
-    // Log certificate info and enforce basic constraints.
-    let (_, leaf_cert_parsed) = X509Certificate::from_der(&doc.certificate)
-        .context("Failed to parse leaf certificate for constraints")?;
-    if leaf_cert_parsed.is_ca() {
-        bail!("Leaf certificate must not be a CA");
-    }
-    debug!(
-        "Leaf certificate: subject={}, issuer={}",
-        leaf_cert_parsed.subject(),
-        leaf_cert_parsed.issuer()
-    );
-
     // Create trust anchor from root CA
     let root_cert_der = CertificateDer::from(root_ca_der);
     let trust_anchor = webpki::anchor_from_trusted_cert(&root_cert_der)
         .context("Failed to create trust anchor from root CA")?;
-
-    if let Ok((_, cert)) = X509Certificate::from_der(root_cert_der.as_ref()) {
-        debug!(
-            "Root CA: subject={}, issuer={}",
-            cert.subject(),
-            cert.issuer()
-        );
-    }
 
     // Get current time
     let now = now_override.unwrap_or(SystemTime::now());
@@ -143,9 +149,64 @@ fn verify_certificate_chain(
         .context("Failed to get current time")?;
     let time = UnixTime::since_unix_epoch(now);
 
-    // Verify certificate chain
-    // Note: AWS Nitro Enclaves don't use CRL, so we disable revocation checking
+    let chain_has_crl_dp = has_crl_distribution_points(&doc.certificate)?
+        || doc
+            .cabundle
+            .iter()
+            .skip(1) // Skip the root cert from cabundle
+            .any(|cert| has_crl_distribution_points(cert).unwrap_or(false));
+
+    let root_has_crl_dp = has_crl_distribution_points(root_cert_der.as_ref()).unwrap_or(false);
+
     let trust_anchors = [trust_anchor];
+
+    let Some(collateral) = collateral else {
+        leaf_cert
+            .verify_for_usage(
+                webpki::ALL_VERIFICATION_ALGS,
+                &trust_anchors,
+                &intermediates,
+                time,
+                webpki::KeyUsage::client_auth(),
+                None,
+                None,
+            )
+            .context("Certificate chain verification failed")?;
+        return Ok(());
+    };
+    if root_has_crl_dp && collateral.root_ca_crl.is_none() {
+        bail!("Root CA has CRL distribution points but no root CA CRL provided");
+    }
+    if chain_has_crl_dp && collateral.crls.is_empty() {
+        bail!("CRL distribution points present but no CRLs downloaded");
+    }
+
+    if let Some(root_ca_crl) = &collateral.root_ca_crl {
+        let crl_refs = vec![root_ca_crl.as_slice()];
+        dcap_qvl_webpki::check_single_cert_crl(root_cert_der.as_ref(), &crl_refs, time)
+            .context("root CA revoked or invalid CRL")?;
+    }
+
+    let crls: Vec<CertRevocationList> = collateral
+        .crls
+        .iter()
+        .enumerate()
+        .map(|(i, der)| {
+            BorrowedCertRevocationList::from_der(der)
+                .map(|crl| crl.into())
+                .with_context(|| format!("failed to parse intermediate CRL #{i}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let crl_refs: Vec<&CertRevocationList> = crls.iter().collect();
+
+    let revocation_builder = webpki::RevocationOptionsBuilder::new(&crl_refs)
+        .map_err(|_| anyhow::anyhow!("failed to create RevocationOptionsBuilder"))?;
+
+    let revocation = revocation_builder
+        .with_depth(webpki::RevocationCheckDepth::Chain)
+        .with_status_policy(webpki::UnknownStatusPolicy::Allow)
+        .with_expiration_policy(webpki::ExpirationPolicy::Enforce)
+        .build();
 
     leaf_cert
         .verify_for_usage(
@@ -154,7 +215,7 @@ fn verify_certificate_chain(
             &intermediates,
             time,
             webpki::KeyUsage::client_auth(),
-            None, // No revocation checking
+            Some(revocation),
             None,
         )
         .context("Certificate chain verification failed")?;
@@ -232,6 +293,16 @@ fn parse_pem_cert(pem_str: &str) -> Result<Vec<u8>> {
         bail!("PEM is not a certificate: {}", pem_block.tag());
     }
     Ok(pem_block.into_contents())
+}
+
+fn has_crl_distribution_points(cert_der: &[u8]) -> Result<bool> {
+    let (_, cert) = X509Certificate::from_der(cert_der).context("failed to parse certificate")?;
+    for ext in cert.extensions() {
+        if let ParsedExtension::CRLDistributionPoints(_) = ext.parsed_extension() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
