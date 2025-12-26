@@ -16,6 +16,9 @@ use x509_parser::prelude::*;
 
 use crate::{AttestationDocument, CoseSign1};
 
+const DIGEST_SHA384: &str = "SHA384";
+const PCR_SHA384_LEN: usize = 48;
+
 /// Verified NSM attestation report
 #[derive(Debug, Clone)]
 pub struct NsmVerifiedReport {
@@ -44,19 +47,25 @@ pub fn verify_attestation_with_ca(
 }
 
 /// Verify Nitro attestation with custom root CA and custom time (for testing)
+///
+/// This enforces digest/PCR consistency and a freshness window based on `now`.
 pub fn verify_attestation(
     cose_sign1_bytes: &[u8],
     root_ca_pem: &str,
     now: Option<SystemTime>,
 ) -> Result<NsmVerifiedReport> {
+    let now = now.unwrap_or_else(SystemTime::now);
     let cose = CoseSign1::from_bytes(cose_sign1_bytes).context("Failed to parse COSE Sign1")?;
+    cose.validate_critical_headers()
+        .context("Unsupported COSE critical headers")?;
     let alg = cose.algorithm().context("Failed to get algorithm")?;
     if alg != -35 {
         bail!("Unsupported COSE algorithm: {alg}. Expected -35 (ES384)");
     }
     let doc = AttestationDocument::from_cbor(&cose.payload)
         .context("Failed to parse attestation document")?;
-    verify_certificate_chain(&doc, root_ca_pem, now)
+    validate_attestation_document(&doc).context("Attestation document validation failed")?;
+    verify_certificate_chain(&doc, root_ca_pem, Some(now))
         .context("Certificate chain verification failed")?;
     verify_cose_signature(&cose, &doc.certificate).context("COSE signature verification failed")?;
 
@@ -102,14 +111,17 @@ fn verify_certificate_chain(
     let leaf_cert =
         EndEntityCert::try_from(&leaf_cert_der).context("Failed to parse leaf certificate")?;
 
-    // Log certificate info
-    if let Ok((_, cert)) = X509Certificate::from_der(&doc.certificate) {
-        debug!(
-            "Leaf certificate: subject={}, issuer={}",
-            cert.subject(),
-            cert.issuer()
-        );
+    // Log certificate info and enforce basic constraints.
+    let (_, leaf_cert_parsed) = X509Certificate::from_der(&doc.certificate)
+        .context("Failed to parse leaf certificate for constraints")?;
+    if leaf_cert_parsed.is_ca() {
+        bail!("Leaf certificate must not be a CA");
     }
+    debug!(
+        "Leaf certificate: subject={}, issuer={}",
+        leaf_cert_parsed.subject(),
+        leaf_cert_parsed.issuer()
+    );
 
     // Create trust anchor from root CA
     let root_cert_der = CertificateDer::from(root_ca_der);
@@ -146,6 +158,27 @@ fn verify_certificate_chain(
             None,
         )
         .context("Certificate chain verification failed")?;
+
+    Ok(())
+}
+
+fn validate_attestation_document(doc: &AttestationDocument) -> Result<()> {
+    if doc.digest != DIGEST_SHA384 {
+        bail!("Unsupported digest algorithm: {}", doc.digest);
+    }
+
+    if doc.pcrs.is_empty() {
+        bail!("No PCRs in attestation document");
+    }
+
+    for (idx, value) in &doc.pcrs {
+        if value.len() != PCR_SHA384_LEN {
+            bail!(
+                "PCR{idx} length mismatch: {} (expected {PCR_SHA384_LEN})",
+                value.len()
+            );
+        }
+    }
 
     Ok(())
 }
@@ -204,6 +237,7 @@ fn parse_pem_cert(pem_str: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AWS_NITRO_ENCLAVES_ROOT_G1;
 
     #[test]
     fn test_root_ca_parsing() {

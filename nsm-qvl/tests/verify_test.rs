@@ -2,15 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Test for NSM attestation verification
 use nsm_qvl::{verify_attestation, AttestationDocument, CoseSign1};
+use std::io::Cursor;
 
 // Real attestation captured from Nitro Enclave
 const ATTESTATION_BIN: &[u8] = include_bytes!("nitro_attestation.bin");
 
-fn extract_cose_sign1(data: &[u8]) -> &[u8] {
+fn extract_cose_sign1(data: &[u8]) -> Vec<u8> {
     // Find COSE Sign1 structure (starts with 0x84 for 4-element array)
     for i in 0..data.len().saturating_sub(2) {
         if data[i] == 0x84 && data[i + 1] == 0x44 {
-            return &data[i..];
+            let mut reader = Cursor::new(&data[i..]);
+            let _: ciborium::Value =
+                ciborium::from_reader(&mut reader).expect("Failed to parse COSE Sign1 CBOR");
+            let len = reader.position() as usize;
+            return data[i..i + len].to_vec();
         }
     }
     panic!("Could not find COSE Sign1 marker in attestation data");
@@ -20,7 +25,7 @@ fn extract_cose_sign1(data: &[u8]) -> &[u8] {
 fn test_parse_cose_sign1() {
     let cose_data = extract_cose_sign1(ATTESTATION_BIN);
 
-    let cose = CoseSign1::from_bytes(cose_data).expect("Failed to parse COSE Sign1");
+    let cose = CoseSign1::from_bytes(&cose_data).expect("Failed to parse COSE Sign1");
 
     // Verify algorithm is ES384 (-35)
     let alg = cose.algorithm().expect("Failed to get algorithm");
@@ -42,7 +47,7 @@ fn test_parse_cose_sign1() {
 #[test]
 fn test_parse_attestation_document() {
     let cose_data = extract_cose_sign1(ATTESTATION_BIN);
-    let cose = CoseSign1::from_bytes(cose_data).expect("Failed to parse COSE Sign1");
+    let cose = CoseSign1::from_bytes(&cose_data).expect("Failed to parse COSE Sign1");
 
     let doc = AttestationDocument::from_cbor(&cose.payload)
         .expect("Failed to parse attestation document");
@@ -68,7 +73,7 @@ fn test_verify_attestation_full() {
     // This test verifies the full attestation:
     // 1. COSE Sign1 signature verification
     // 2. Certificate chain verification against AWS Nitro root CA
-    let result = verify_attestation(cose_data);
+    let result = verify_attestation(&cose_data, nsm_qvl::AWS_NITRO_ENCLAVES_ROOT_G1, None);
 
     match result {
         Ok(report) => {
@@ -96,7 +101,7 @@ fn test_verify_attestation_full() {
             );
 
             // Still verify we can parse the structure
-            let cose = CoseSign1::from_bytes(cose_data).expect("Should parse COSE");
+            let cose = CoseSign1::from_bytes(&cose_data).expect("Should parse COSE");
             let _doc = AttestationDocument::from_cbor(&cose.payload)
                 .expect("Should parse attestation document");
         }

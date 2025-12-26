@@ -22,7 +22,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, io::Cursor};
 
 mod verify;
 
@@ -52,8 +52,12 @@ impl CoseSign1 {
     /// Parse COSE Sign1 from raw bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         // COSE Sign1 structure is a CBOR array: [protected, unprotected, payload, signature]
+        let mut reader = Cursor::new(data);
         let value: ciborium::Value =
-            ciborium::from_reader(data).context("Failed to parse COSE Sign1 CBOR")?;
+            ciborium::from_reader(&mut reader).context("Failed to parse COSE Sign1 CBOR")?;
+        if reader.position() != data.len() as u64 {
+            bail!("Trailing bytes after COSE Sign1");
+        }
 
         let array = match value {
             ciborium::Value::Array(arr) => arr,
@@ -110,9 +114,7 @@ impl CoseSign1 {
 
     /// Get the algorithm from protected header
     pub fn algorithm(&self) -> Result<i64> {
-        let protected_map: BTreeMap<i64, ciborium::Value> =
-            ciborium::from_reader(&self.protected[..])
-                .context("Failed to parse protected header")?;
+        let protected_map = self.protected_map()?;
 
         // Algorithm is key 1 in COSE
         let alg = protected_map
@@ -126,6 +128,38 @@ impl CoseSign1 {
             }
             _ => bail!("Algorithm is not an integer"),
         }
+    }
+
+    /// Validate critical headers (crit) per COSE rules.
+    pub fn validate_critical_headers(&self) -> Result<()> {
+        let protected_map = self.protected_map()?;
+        let Some(crit) = protected_map.get(&2) else {
+            return Ok(());
+        };
+
+        let crit_list = match crit {
+            ciborium::Value::Array(arr) => arr,
+            _ => bail!("COSE crit header is not an array"),
+        };
+
+        for item in crit_list {
+            match item {
+                ciborium::Value::Integer(i) => {
+                    let val: i128 = (*i).into();
+                    if val as i64 != 1 {
+                        bail!("Unsupported critical header parameter: {val}");
+                    }
+                }
+                ciborium::Value::Text(name) => {
+                    if name != "alg" {
+                        bail!("Unsupported critical header parameter: {name}");
+                    }
+                }
+                _ => bail!("Invalid critical header parameter type"),
+            }
+        }
+
+        Ok(())
     }
 
     /// Build the Sig_structure for verification
@@ -142,6 +176,15 @@ impl CoseSign1 {
         ciborium::into_writer(&sig_structure, &mut buf)
             .context("Failed to encode Sig_structure")?;
         Ok(buf)
+    }
+
+    fn protected_map(&self) -> Result<BTreeMap<i64, ciborium::Value>> {
+        let mut reader = Cursor::new(&self.protected);
+        let map = ciborium::from_reader(&mut reader).context("Failed to parse protected header")?;
+        if reader.position() != self.protected.len() as u64 {
+            bail!("Trailing bytes after protected header");
+        }
+        Ok(map)
     }
 }
 
@@ -175,6 +218,12 @@ pub struct AttestationDocument {
 impl AttestationDocument {
     /// Parse attestation document from CBOR payload
     pub fn from_cbor(data: &[u8]) -> Result<Self> {
-        ciborium::from_reader(data).context("Failed to parse attestation document CBOR")
+        let mut reader = Cursor::new(data);
+        let doc = ciborium::from_reader(&mut reader)
+            .context("Failed to parse attestation document CBOR")?;
+        if reader.position() != data.len() as u64 {
+            bail!("Trailing bytes after attestation document CBOR");
+        }
+        Ok(doc)
     }
 }

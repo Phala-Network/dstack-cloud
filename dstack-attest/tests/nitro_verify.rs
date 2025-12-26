@@ -4,8 +4,9 @@
 
 //! Integration test: verify Nitro Enclave attestation end-to-end
 
-use dstack_attest::attestation::{DstackVerifiedReport, VersionedAttestation};
+use dstack_attest::attestation::{AttestationQuote, DstackVerifiedReport, VersionedAttestation};
 use futures::executor::block_on;
+use nsm_qvl::{AttestationDocument, CoseSign1};
 use std::time::{Duration, SystemTime};
 
 // Real Nitro Enclave attestation captured from an enclave
@@ -24,10 +25,20 @@ fn verify_nitro_attestation_bin() {
     println!("App Info: {app_info_str}");
     insta::assert_snapshot!("app_info", app_info_str);
 
-    // Perform full verification (COSE signature + cert chain + user_data)
-    // Use a fixed historical time to tolerate expired certs in this captured sample
-    // just before not_after
-    let fixed_now = SystemTime::UNIX_EPOCH + Duration::from_secs(1766678656);
+    // Perform full verification (COSE signature + cert chain + user_data).
+    // Use the attestation's own timestamp to keep freshness checks stable for this sample.
+    let fixed_now = match &attestation.quote {
+        AttestationQuote::DstackNitroEnclave(quote) => {
+            let cose =
+                CoseSign1::from_bytes(&quote.nsm_quote).expect("parse COSE Sign1 from quote");
+            let doc =
+                AttestationDocument::from_cbor(&cose.payload).expect("parse attestation document");
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_millis(doc.timestamp))
+                .expect("attestation timestamp overflow")
+        }
+        _ => panic!("unexpected quote type"),
+    };
     let verified = block_on(attestation.verify_with_time(None, Some(fixed_now))).unwrap();
     let DstackVerifiedReport::DstackNitroEnclave(report) = verified.report else {
         panic!("Nitro attestation verification failed");
