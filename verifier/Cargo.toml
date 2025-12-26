@@ -45,6 +45,8 @@ cc-eventlog.workspace = true
 sha2.workspace = true
 tpm-qvl.workspace = true
 tpm-types.workspace = true
+nsm-attest.workspace = true
+ez-hash.workspace = true
 serde-human-bytes.workspace = true
 hex-literal.workspace = true
 

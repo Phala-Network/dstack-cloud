@@ -28,8 +28,13 @@ sha3.workspace = true
 tdx-attest.workspace = true
 tpm-attest.workspace = true
 nsm-attest.workspace = true
+nsm-qvl.workspace = true
 tpm-qvl.workspace = true
 tpm-types.workspace = true
+insta.workspace = true
 
 [features]
 quote = []
+
+[dev-dependencies]
+futures = { workspace = true }

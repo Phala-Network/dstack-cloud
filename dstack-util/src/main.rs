@@ -13,7 +13,7 @@ use k256::schnorr::SigningKey;
 use ra_rpc::Attestation;
 use ra_tls::{
     attestation::{QuoteContentType, VersionedAttestation},
-    cert::generate_ra_cert,
+    cert::{generate_ra_cert, generate_ra_cert_with_app_id},
     kdf::{derive_ecdsa_key, derive_ecdsa_key_pair_from_bytes},
     rcgen::KeyPair,
 };
@@ -295,6 +295,10 @@ struct AttestArgs {
     #[arg(long)]
     report_data: Option<String>,
 
+    /// app id (20 bytes in hex) - optional
+    #[arg(long)]
+    app_id: Option<String>,
+
     /// output file (default: attestation.bin)
     #[arg(short, long)]
     output: Option<PathBuf>,
@@ -340,9 +344,9 @@ struct GetKeysArgs {
     #[arg(short, long)]
     kms_url: String,
 
-    /// PCCS URL for quote verification (optional)
-    #[arg(short, long)]
-    pccs_url: Option<String>,
+    /// Application ID (20 bytes in hex) - optional
+    #[arg(long)]
+    app_id: Option<String>,
 
     /// Output file path (default: stdout as JSON)
     #[arg(short, long)]
@@ -366,7 +370,7 @@ fn cmd_quote_report(args: QuoteReportArgs) -> Result<()> {
 
     let report_data = match args.report_data {
         Some(hex_data) => {
-            pad64(&hex::decode(hex_data).context("Failed to decode report_data hex")?)?
+            pad64(&hex_decode(&hex_data).context("Failed to decode report_data hex")?)?
         }
         None => [0u8; 64],
     };
@@ -385,14 +389,29 @@ fn cmd_quote_report(args: QuoteReportArgs) -> Result<()> {
     Ok(())
 }
 
+fn decode_app_id(hex_str: Option<&str>) -> Result<Option<[u8; 20]>> {
+    let Some(hex_str) = hex_str else {
+        return Ok(None);
+    };
+    let bytes = hex_decode(hex_str).context("Invalid app_id hex string")?;
+    if bytes.len() != 20 {
+        anyhow::bail!("app_id must be exactly 20 bytes (40 hex characters)");
+    }
+    let mut arr = [0u8; 20];
+    arr.copy_from_slice(&bytes);
+    Ok(Some(arr))
+}
+
 fn cmd_attest(args: AttestArgs) -> Result<()> {
     let report_data = match args.report_data {
         Some(hex_data) => {
-            pad64(&hex::decode(hex_data).context("Failed to decode report_data hex")?)?
+            pad64(&hex_decode(&hex_data).context("Failed to decode report_data hex")?)?
         }
         None => [0u8; 64],
     };
-    let attestation = Attestation::quote(&report_data).context("Failed to get attestation")?;
+    let app_id = decode_app_id(args.app_id.as_deref())?;
+    let attestation = Attestation::quote_with_app_id(&report_data, app_id)
+        .context("Failed to get attestation")?;
     let attestation = attestation.into_versioned().to_scale();
 
     if args.hex {
@@ -515,7 +534,6 @@ fn cmd_attest_strip(args: AttestStripArgs) -> Result<()> {
 async fn cmd_get_keys(args: GetKeysArgs) -> Result<()> {
     use dstack_kms_rpc::kms_client::KmsClient;
     use ra_rpc::client::{RaClient, RaClientConfig};
-    use ra_tls::cert::generate_ra_cert;
 
     let kms_url = if args.kms_url.ends_with("/prpc") {
         args.kms_url.clone()
@@ -535,8 +553,13 @@ async fn cmd_get_keys(args: GetKeysArgs) -> Result<()> {
     };
 
     // Step 2: Generate RA-TLS client certificate
-    let cert_pair = generate_ra_cert(tmp_ca.temp_ca_cert.clone(), tmp_ca.temp_ca_key.clone())
-        .context("Failed to generate RA cert")?;
+    let app_id = decode_app_id(args.app_id.as_deref())?;
+    let cert_pair = generate_ra_cert_with_app_id(
+        tmp_ca.temp_ca_cert.clone(),
+        tmp_ca.temp_ca_key.clone(),
+        app_id,
+    )
+    .context("Failed to generate RA cert")?;
 
     // Step 3: Create authenticated client and request app keys
     let ra_client = RaClientConfig::builder()
@@ -546,7 +569,6 @@ async fn cmd_get_keys(args: GetKeysArgs) -> Result<()> {
         .tls_client_cert(cert_pair.cert_pem)
         .tls_client_key(cert_pair.key_pem)
         .tls_ca_cert(tmp_ca.ca_cert.clone())
-        .maybe_pccs_url(args.pccs_url.clone())
         .build()
         .into_client()
         .context("Failed to create RA client")?;
@@ -612,8 +634,12 @@ fn cmd_eventlog() -> Result<()> {
     Ok(())
 }
 
+fn hex_decode(hex_str: &str) -> Result<Vec<u8>> {
+    hex::decode(hex_str.trim_start_matches("0x")).context("Invalid hex string")
+}
+
 fn cmd_extend(extend_args: ExtendArgs) -> Result<()> {
-    let payload = hex::decode(&extend_args.payload).context("Failed to decode payload")?;
+    let payload = hex_decode(&extend_args.payload).context("Failed to decode payload")?;
     emit_runtime_event(&extend_args.event, &payload).context("Failed to extend RTMR")
 }
 
@@ -1055,7 +1081,7 @@ fn cmd_vtpm_attest(args: VtpmAttestArgs) -> Result<()> {
 
 fn cmd_tpm_quote(args: TpmQuoteArgs) -> Result<()> {
     let data = if let Some(hex_data) = args.data {
-        let decoded = hex::decode(&hex_data).context("Failed to decode hex data")?;
+        let decoded = hex_decode(&hex_data).context("Failed to decode hex data")?;
         if decoded.len() > 64 {
             anyhow::bail!("Qualifying data must be at most 64 bytes");
         }

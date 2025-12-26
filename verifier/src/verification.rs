@@ -14,7 +14,8 @@ use dstack_mr::{RtmrLog, TdxMeasurementDetails, TdxMeasurements};
 use dstack_types::VmConfig;
 use hex_literal::hex;
 use ra_tls::attestation::{
-    Attestation, AttestationQuote, TpmQuote, VerifiedAttestation, VersionedAttestation,
+    Attestation, AttestationQuote, DstackNitroQuote, TpmQuote, VerifiedAttestation,
+    VersionedAttestation,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -491,9 +492,9 @@ impl CvmVerifier {
                 self.verify_os_image_hash_for_dstack_tdx(&vm_config, attestation, debug, details)
                     .await?;
             }
-            AttestationQuote::DstackNitroEnclave(_) => {
-                let todo = "Implement it";
-                bail!("Nitro not supported");
+            AttestationQuote::DstackNitroEnclave(quote) => {
+                self.verify_os_image_hash_for_nitro_enclave(&vm_config, quote)
+                    .await?;
             }
         }
         Ok(vm_config)
@@ -633,6 +634,26 @@ impl CvmVerifier {
     /// IMPORTANT: Extracting the 3rd event is GCP OVMF-specific behavior.
     /// On GCP, PCR 2 events are ordered as:
     /// [0]=EV_SEPARATOR, [1]=EV_EFI_GPT_EVENT, [2]=UKI (Event 28), [3]=Linux kernel
+    async fn verify_os_image_hash_for_nitro_enclave(
+        &self,
+        vm_config: &VmConfig,
+        nsm_quote: &DstackNitroQuote,
+    ) -> Result<()> {
+        // Parse NSM attestation document
+        let os_image_hash = nsm_quote
+            .decode_image_hash()
+            .context("Failed to decode PCR values")?;
+        // Compare with expected os_image_hash from vm_config
+        if os_image_hash != vm_config.os_image_hash {
+            bail!(
+                "os_image_hash mismatch: expected={}, computed={}",
+                hex::encode(&vm_config.os_image_hash),
+                hex::encode(&os_image_hash)
+            );
+        }
+        Ok(())
+    }
+
     async fn verify_os_image_hash_for_gcp_tdx(
         &self,
         vm_config: &VmConfig,

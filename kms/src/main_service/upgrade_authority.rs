@@ -4,12 +4,14 @@
 
 use crate::config::AuthApi;
 use anyhow::{bail, Result};
+use ra_tls::attestation::AttestationMode;
 use serde::{Deserialize, Serialize};
 use serde_human_bytes as hex_bytes;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BootInfo {
+    pub attestation_mode: AttestationMode,
     #[serde(with = "hex_bytes")]
     pub mr_aggregated: Vec<u8>,
     #[serde(with = "hex_bytes")]

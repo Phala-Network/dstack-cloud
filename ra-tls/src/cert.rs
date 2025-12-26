@@ -479,6 +479,17 @@ pub fn decompress_ext_value(data: &[u8]) -> Result<Vec<u8>> {
 /// Generate a certificate with RA-TLS quote and event log.
 #[cfg(feature = "quote")]
 pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertPair> {
+    generate_ra_cert_with_app_id(ca_cert_pem, ca_key_pem, None)
+}
+
+/// Generate a certificate with RA-TLS quote and event log.
+/// If app_id is provided, it will be included in the quote.
+#[cfg(feature = "quote")]
+pub fn generate_ra_cert_with_app_id(
+    ca_cert_pem: String,
+    ca_key_pem: String,
+    app_id: Option<[u8; 20]>,
+) -> Result<CertPair> {
     use rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256};
 
     let ca = CaCert::new(ca_cert_pem, ca_key_pem)?;
@@ -488,7 +499,7 @@ pub fn generate_ra_cert(ca_cert_pem: String, ca_key_pem: String) -> Result<CertP
 
     let report_data = QuoteContentType::RaTlsCert.to_report_data(&pubkey);
 
-    let attestation = Attestation::quote(&report_data)
+    let attestation = Attestation::quote_with_app_id(&report_data, app_id)
         .context("Failed to get quote for cert pubkey")?
         .into_versioned();
 

@@ -4,7 +4,7 @@
 
 //! Attestation functions
 
-use std::borrow::Cow;
+use std::{borrow::Cow, time::SystemTime};
 
 use anyhow::{anyhow, bail, Context, Result};
 use cc_eventlog::{RuntimeEvent, TdxEvent};
@@ -16,7 +16,7 @@ use dstack_types::{Platform, VmConfig};
 use ez_hash::{sha256, Hasher, Sha256, Sha384};
 use or_panic::ResultOrPanic;
 use scale::{Decode, Encode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_human_bytes as hex_bytes;
 use sha2::Digest as _;
 use tpm_qvl::verify::VerifiedReport as TpmVerifiedReport;
@@ -24,15 +24,22 @@ use tpm_qvl::verify::VerifiedReport as TpmVerifiedReport;
 // Re-export TpmQuote from tpm-types
 pub use tpm_types::TpmQuote;
 
+const DSTACK_TDX: &str = "dstack-tdx";
+const DSTACK_GCP_TDX: &str = "dstack-gcp-tdx";
+const DSTACK_NITRO_ENCLAVE: &str = "dstack-nitro-enclave";
+
 /// Attestation mode
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode, Serialize, Deserialize)]
 pub enum AttestationMode {
     /// Intel TDX with DCAP quote only
     #[default]
+    #[serde(rename = "dstack-tdx")]
     DstackTdx,
     /// GCP TDX with DCAP quote only
+    #[serde(rename = "dstack-gcp-tdx")]
     DstackGcpTdx,
     /// Dstack attestation SDK in AWS Nitro Enclave
+    #[serde(rename = "dstack-nitro-enclave")]
     DstackNitroEnclave,
 }
 
@@ -82,9 +89,18 @@ impl AttestationMode {
     /// As string for debug
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::DstackTdx => "dstack-tdx",
-            Self::DstackGcpTdx => "dstack-gcp-tdx",
-            Self::DstackNitroEnclave => "dstack-nitro-enclave",
+            Self::DstackTdx => DSTACK_TDX,
+            Self::DstackGcpTdx => DSTACK_GCP_TDX,
+            Self::DstackNitroEnclave => DSTACK_NITRO_ENCLAVE,
+        }
+    }
+
+    /// Returns true if the attestation mode supports composability (OS image + runtime loadable application)
+    pub fn is_composable(&self) -> bool {
+        match self {
+            Self::DstackTdx => true,
+            Self::DstackGcpTdx => true,
+            Self::DstackNitroEnclave => false,
         }
     }
 }
@@ -161,6 +177,20 @@ impl QuoteContentType<'_> {
     }
 }
 
+/// Verified Nitro Enclave attestation report
+#[derive(Clone, Debug, Serialize)]
+pub struct NitroVerifiedReport {
+    /// Module ID
+    pub module_id: String,
+    /// PCR0 - Enclave image hash
+    pub pcrs: NitroPcrs,
+    /// User data from attestation
+    #[serde(with = "serde_human_bytes")]
+    pub user_data: Vec<u8>,
+    /// Timestamp
+    pub timestamp: u64,
+}
+
 /// Represents a verified attestation
 #[derive(Clone)]
 pub enum DstackVerifiedReport {
@@ -169,6 +199,7 @@ pub enum DstackVerifiedReport {
         tdx_report: TdxVerifiedReport,
         tpm_report: TpmVerifiedReport,
     },
+    DstackNitroEnclave(NitroVerifiedReport),
 }
 
 impl DstackVerifiedReport {
@@ -176,6 +207,7 @@ impl DstackVerifiedReport {
         match self {
             DstackVerifiedReport::DstackTdx(report) => Some(report),
             DstackVerifiedReport::DstackGcpTdx { tdx_report, .. } => Some(tdx_report),
+            DstackVerifiedReport::DstackNitroEnclave(_) => None,
         }
     }
 }
@@ -251,6 +283,49 @@ pub struct DstackGcpTdxQuote {
 #[derive(Clone, Encode, Decode)]
 pub struct DstackNitroQuote {
     pub nsm_quote: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct NitroPcrs {
+    #[serde(with = "serde_human_bytes")]
+    pub pcr0: Vec<u8>,
+    #[serde(with = "serde_human_bytes")]
+    pub pcr1: Vec<u8>,
+    #[serde(with = "serde_human_bytes")]
+    pub pcr2: Vec<u8>,
+}
+
+impl NitroPcrs {
+    fn is_zero(&self) -> bool {
+        self.pcr0.iter().all(|&b| b == 0)
+            && self.pcr1.iter().all(|&b| b == 0)
+            && self.pcr2.iter().all(|&b| b == 0)
+    }
+}
+
+impl DstackNitroQuote {
+    pub fn decode_cose(&self) -> Result<nsm_attest::AttestationDocument> {
+        nsm_attest::AttestationDocument::from_cose(&self.nsm_quote)
+            .context("Failed to decode NSM attestation document")
+    }
+
+    pub fn decode_image_hash(&self) -> Result<Vec<u8>> {
+        let pcrs = self.decode_pcrs()?;
+        let hash = if pcrs.is_zero() {
+            [0u8; 32]
+        } else {
+            sha256([&pcrs.pcr0, &pcrs.pcr1, &pcrs.pcr2])
+        };
+        Ok(hash.to_vec())
+    }
+
+    pub fn decode_pcrs(&self) -> Result<NitroPcrs> {
+        let doc = self.decode_cose()?;
+        let pcr0 = doc.pcrs.get(&0).cloned().context("PCR 0 not found")?;
+        let pcr1 = doc.pcrs.get(&1).cloned().context("PCR 1 not found")?;
+        let pcr2 = doc.pcrs.get(&2).cloned().context("PCR 2 not found")?;
+        Ok(NitroPcrs { pcr0, pcr1, pcr2 })
+    }
 }
 
 #[derive(Clone, Encode, Decode)]
@@ -353,6 +428,14 @@ impl GetDeviceId for DstackVerifiedReport {
         match self {
             DstackVerifiedReport::DstackTdx(tdx_report) => tdx_report.ppid.to_vec(),
             DstackVerifiedReport::DstackGcpTdx { tdx_report, .. } => tdx_report.ppid.to_vec(),
+            DstackVerifiedReport::DstackNitroEnclave(report) => {
+                // i-1234567890abcdef0-enc9876543210abcde -> i-1234567890abcdef0
+                report
+                    .module_id
+                    .split_once('-')
+                    .map(|(id, _)| id.as_bytes().to_vec())
+                    .unwrap_or_default()
+            }
         }
     }
 }
@@ -390,18 +473,27 @@ impl<T: GetDeviceId> Attestation<T> {
         })
     }
 
-    fn decode_mr_nitro_nsm(
-        &self,
-        _boottime_mr: bool,
-        mr_key_provider: &[u8],
-        os_image_hash: &[u8],
-        nsm_quote: &[u8],
-    ) -> Result<Mrs> {
-        todo!()
+    fn decode_mr_nitro_nsm(&self, nsm_quote: &DstackNitroQuote) -> Result<Mrs> {
+        // Parse NSM attestation document to get PCR values
+        let pcrs = nsm_quote.decode_pcrs()?;
+
+        // Compute mr_system from PCR values and mr_key_provider
+        let mr_system = sha256([&pcrs.pcr0, &pcrs.pcr1, &pcrs.pcr2]);
+        let mr_aggregated = mr_system;
+
+        Ok(Mrs {
+            mr_system,
+            mr_aggregated,
+        })
     }
 
-    fn decode_mr_tdx(&self, boottime_mr: bool, mr_key_provider: &[u8]) -> Result<Mrs> {
-        let quote = self.decode_tdx_quote()?;
+    fn decode_mr_tdx(
+        &self,
+        boottime_mr: bool,
+        mr_key_provider: &[u8],
+        tdx_quote: &TdxQuote,
+    ) -> Result<Mrs> {
+        let quote = Quote::parse(&tdx_quote.quote).context("Failed to parse quote")?;
         let rtmr3 = self.replay_runtime_events::<Sha384>(boottime_mr.then_some("boot-mr-done"));
         let td_report = quote.report.as_td10().context("TDX report not found")?;
         let mr_system = sha256([
@@ -445,6 +537,7 @@ impl<T: GetDeviceId> Attestation<T> {
             config = &self.config;
         }
         if config.is_empty() {
+            // No vm config for nitro enclave
             config = "{}";
         }
         let vm_config: VmConfig =
@@ -473,26 +566,28 @@ impl<T: GetDeviceId> Attestation<T> {
             .context("Failed to decode os image hash")?
             .os_image_hash;
         let mrs = match &self.quote {
-            AttestationQuote::DstackTdx(_) => self.decode_mr_tdx(boottime_mr, &mr_key_provider)?,
+            AttestationQuote::DstackTdx(q) => {
+                self.decode_mr_tdx(boottime_mr, &mr_key_provider, q)?
+            }
             AttestationQuote::DstackGcpTdx(q) => {
                 self.decode_mr_gcp_tpm(boottime_mr, &mr_key_provider, &os_image_hash, &q.tpm_quote)?
             }
-            AttestationQuote::DstackNitroEnclave(q) => self.decode_mr_nitro_nsm(
-                boottime_mr,
-                &mr_key_provider,
-                &os_image_hash,
-                &q.nsm_quote,
-            )?,
+            AttestationQuote::DstackNitroEnclave(q) => self.decode_mr_nitro_nsm(q)?,
+        };
+        let compose_hash = if self.quote.mode().is_composable() {
+            self.find_event_payload("compose-hash").unwrap_or_default()
+        } else {
+            os_image_hash.clone()
         };
         Ok(AppInfo {
             app_id: self.find_event_payload("app-id").unwrap_or_default(),
-            compose_hash: self.find_event_payload("compose-hash").unwrap_or_default(),
             instance_id: self.find_event_payload("instance-id").unwrap_or_default(),
             device_id: sha256(self.report.get_devide_id()).to_vec(),
             mr_system: mrs.mr_system,
             mr_aggregated: mrs.mr_aggregated,
             key_provider_info,
             os_image_hash,
+            compose_hash,
         })
     }
 }
@@ -589,8 +684,18 @@ impl Attestation {
 
     /// Create an attestation from a report data
     pub fn quote(report_data: &[u8; 64]) -> Result<Self> {
+        Self::quote_with_app_id(report_data, None)
+    }
+
+    pub fn quote_with_app_id(report_data: &[u8; 64], app_id: Option<[u8; 20]>) -> Result<Self> {
         let mode = AttestationMode::detect()?;
-        let runtime_events = RuntimeEvent::read_all().context("Failed to read runtime events")?;
+        let runtime_events = if mode.is_composable() {
+            RuntimeEvent::read_all().context("Failed to read runtime events")?
+        } else if let Some(app_id) = app_id {
+            vec![RuntimeEvent::new("app-id".to_string(), app_id.to_vec())]
+        } else {
+            vec![]
+        };
 
         let quote = match mode {
             AttestationMode::DstackTdx => {
@@ -621,16 +726,20 @@ impl Attestation {
                 AttestationQuote::DstackNitroEnclave(DstackNitroQuote { nsm_quote })
             }
         };
-        let todo = "fill the os hash";
-        let config = match mode {
-            AttestationMode::DstackTdx | AttestationMode::DstackGcpTdx => {
+        let config = match &quote {
+            AttestationQuote::DstackTdx(_) | AttestationQuote::DstackGcpTdx(_) => {
                 // TODO: Find a better way handling this hardcode path
                 fs_err::read_to_string("/dstack/.host-shared/.sys-config.json").unwrap_or_default()
             }
-            AttestationMode::DstackNitroEnclave => serde_json::to_string(&serde_json::json!({
-                "os_image_hash": "",
-            }))
-            .unwrap(),
+            AttestationQuote::DstackNitroEnclave(quote) => {
+                let os_image_hash = quote
+                    .decode_image_hash()
+                    .context("Failed to decode image hash")?;
+                serde_json::to_string(&serde_json::json!({
+                    "os_image_hash": hex::encode(os_image_hash),
+                }))
+                .context("Failed to serialize config")?
+            }
         };
 
         Ok(Self {
@@ -644,6 +753,45 @@ impl Attestation {
 }
 
 impl Attestation {
+    /// Verify the quote with optional custom time (testing hook)
+    pub async fn verify_with_time(
+        self,
+        pccs_url: Option<&str>,
+        now: Option<SystemTime>,
+    ) -> Result<VerifiedAttestation> {
+        let report = match &self.quote {
+            AttestationQuote::DstackTdx(q) => {
+                let report = self.verify_tdx(pccs_url, &q.quote).await?;
+                DstackVerifiedReport::DstackTdx(report)
+            }
+            AttestationQuote::DstackGcpTdx(q) => {
+                let tdx_report = self.verify_tdx(pccs_url, &q.tdx_quote.quote).await?;
+                let tpm_report = self
+                    .verify_tpm(&q.tpm_quote, &sha256(&q.tdx_quote.quote))
+                    .await
+                    .context("Failed to verify TPM quote")?;
+                DstackVerifiedReport::DstackGcpTdx {
+                    tdx_report,
+                    tpm_report,
+                }
+            }
+            AttestationQuote::DstackNitroEnclave(quote) => {
+                let report = self
+                    .verify_nitro_enclave_with_time(quote, now)
+                    .context("Failed to verify Nitro Enclave")?;
+                DstackVerifiedReport::DstackNitroEnclave(report)
+            }
+        };
+
+        Ok(VerifiedAttestation {
+            quote: self.quote,
+            runtime_events: self.runtime_events,
+            report_data: self.report_data,
+            config: self.config,
+            report,
+        })
+    }
+
     /// Wrap into a versioned attestation for encoding
     pub fn into_versioned(self) -> VersionedAttestation {
         VersionedAttestation::V0 { attestation: self }
@@ -664,30 +812,46 @@ impl Attestation {
 
     /// Verify the quote
     pub async fn verify(self, pccs_url: Option<&str>) -> Result<VerifiedAttestation> {
-        let report = match &self.quote {
-            AttestationQuote::DstackTdx(q) => {
-                let report = self.verify_tdx(pccs_url, &q.quote).await?;
-                DstackVerifiedReport::DstackTdx(report)
-            }
-            AttestationQuote::DstackGcpTdx(q) => {
-                let tdx_report = self.verify_tdx(pccs_url, &q.tdx_quote.quote).await?;
-                let tpm_report = self
-                    .verify_tpm(&q.tpm_quote, &sha256(&q.tdx_quote.quote))
-                    .await
-                    .context("Failed to verify TPM quote")?;
-                DstackVerifiedReport::DstackGcpTdx {
-                    tdx_report,
-                    tpm_report,
-                }
-            }
-            AttestationQuote::DstackNitroEnclave(quote) => todo!(),
+        self.verify_with_time(pccs_url, None).await
+    }
+
+    /// Verify Nitro Enclave attestation with optional custom time (testing hook)
+    ///
+    /// This performs full cryptographic verification:
+    /// 1. Verifies COSE Sign1 signature using ECDSA P-384 with SHA-384
+    /// 2. Verifies certificate chain from attestation document to AWS Nitro root CA
+    /// 3. Validates user_data matches expected report_data
+    fn verify_nitro_enclave_with_time(
+        &self,
+        nsm_quote: &DstackNitroQuote,
+        now: Option<SystemTime>,
+    ) -> Result<NitroVerifiedReport> {
+        // Verify COSE signature and certificate chain using nsm-qvl
+        let verified_report = nsm_qvl::verify_attestation(
+            &nsm_quote.nsm_quote,
+            nsm_qvl::AWS_NITRO_ENCLAVES_ROOT_G1,
+            now,
+        )
+        .context("NSM attestation verification failed")?;
+
+        // Verify user_data matches report_data
+        let Some(user_data) = verified_report.user_data.clone() else {
+            bail!("NSM attestation document does not contain user_data");
         };
-        Ok(VerifiedAttestation {
-            quote: self.quote,
-            runtime_events: self.runtime_events,
-            report_data: self.report_data,
-            config: self.config,
-            report,
+        if user_data != self.report_data {
+            bail!("NSM user_data does not match report_data");
+        }
+
+        // Decode PCRs from quote
+        let pcrs = nsm_quote
+            .decode_pcrs()
+            .context("Failed to decode nitro pcrs")?;
+
+        Ok(NitroVerifiedReport {
+            module_id: verified_report.module_id,
+            pcrs,
+            user_data,
+            timestamp: verified_report.timestamp,
         })
     }
 
