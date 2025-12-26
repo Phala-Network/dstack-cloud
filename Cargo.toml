@@ -24,6 +24,7 @@ members = [
     "tpm2",
     "tpm-types",
     "tpm-qvl",
+    "nsm-qvl",
     "dstack-attest",
     "dstack-util",
     "iohash",
@@ -79,6 +80,7 @@ tpm2 = { path = "tpm2" }
 tpm-types = { path = "tpm-types" }
 dstack-attest = { path = "dstack-attest" }
 tpm-qvl = { path = "tpm-qvl" }
+nsm-qvl = { path = "nsm-qvl" }
 certbot = { path = "certbot" }
 rocket-vsock-listener = { path = "rocket-vsock-listener" }
 host-api = { path = "host-api", default-features = false }

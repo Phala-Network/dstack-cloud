@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "nsm-qvl"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AWS Nitro Enclave NSM Quote Verification Library"
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tracing.workspace = true
+
+# CBOR/COSE parsing
+ciborium = "0.2"
+
+# Cryptographic verification
+p384 = { version = "0.13", features = ["ecdsa"] }
+sha2 = { workspace = true, features = ["oid"] }
+pem = "3.0"
+
+# Certificate chain verification
+x509-parser = "0.16"
+rustls-webpki = { version = "0.103.8", features = ["alloc", "ring"] }
+rustls-pki-types = "1.13.1"
+
+[dev-dependencies]
+nsm-attest.workspace = true
