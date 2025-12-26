@@ -17,17 +17,17 @@ serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
 
 # CBOR/COSE parsing
-ciborium = "0.2"
+ciborium.workspace = true
 
 # Cryptographic verification
-p384 = { version = "0.13", features = ["ecdsa"] }
+p384 = { workspace = true, features = ["ecdsa"] }
 sha2 = { workspace = true, features = ["oid"] }
-pem = "3.0"
+pem.workspace = true
 
 # Certificate chain verification
-x509-parser = "0.16"
-rustls-webpki = { version = "0.103.8", features = ["alloc", "ring"] }
-rustls-pki-types = "1.13.1"
+x509-parser.workspace = true
+rustls-webpki = { workspace = true, features = ["alloc", "ring"] }
+rustls-pki-types.workspace = true
 
 [dev-dependencies]
 nsm-attest.workspace = true
