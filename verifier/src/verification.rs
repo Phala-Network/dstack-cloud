@@ -625,15 +625,12 @@ impl CvmVerifier {
         }
     }
 
-    /// Verify GCP TDX image hash using PCR 2 Event Log
+    /// Verify Nitro Enclave OS image hash using NSM PCRs
     ///
-    /// For GCP TDX, we verify:
-    /// 1. PCR 0 matches expected GCP OVMF v2 firmware
-    /// 2. UKI hash by extracting Event 28 (3rd event in PCR 2) from TPM Event Log
-    ///
-    /// IMPORTANT: Extracting the 3rd event is GCP OVMF-specific behavior.
-    /// On GCP, PCR 2 events are ordered as:
-    /// [0]=EV_SEPARATOR, [1]=EV_EFI_GPT_EVENT, [2]=UKI (Event 28), [3]=Linux kernel
+    /// For Nitro:
+    /// 1. PCR0/1/2 come from the EIF build (code + kernel + app) in production mode.
+    /// 2. In debug mode, PCR0/1/2 are zeroed by AWS; we tolerate that and return 32 zero bytes.
+    /// 3. The computed image hash is compared against vm_config.os_image_hash.
     async fn verify_os_image_hash_for_nitro_enclave(
         &self,
         vm_config: &VmConfig,
