@@ -71,12 +71,16 @@ async fn test_verify_attestation_full() {
     tracing_subscriber::fmt::try_init().ok();
 
     let cose_data = extract_cose_sign1(ATTESTATION_BIN);
+    let cose = CoseSign1::from_bytes(&cose_data).expect("Failed to parse COSE Sign1");
+    let doc = AttestationDocument::from_cbor(&cose.payload)
+        .expect("Failed to parse attestation document");
+    let attestation_time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(doc.timestamp);
 
     let report = nsm_qvl::verify_attestation_with_crl(
         &cose_data,
         nsm_qvl::AWS_NITRO_ENCLAVES_ROOT_G1,
         std::env::var("TEST_FETCH_CRL").is_ok(),
-        None,
+        Some(attestation_time),
     )
     .await
     .unwrap();

@@ -633,9 +633,10 @@ mod tests {
                 ext_quote: false,
             },
             attestation: Attestation {
-                mode: AttestationMode::DstackTdx,
-                tdx_quote: None,
-                tpm_quote: None,
+                quote: AttestationQuote::DstackTdx(TdxQuote {
+                    quote: vec![9],
+                    event_log: vec![],
+                }),
                 runtime_events: vec![],
                 report_data: [0u8; 64],
                 config: "".into(),
@@ -645,7 +646,7 @@ mod tests {
         };
 
         let actual = hex::encode(csr.encode());
-        let expected = "44706c65617365207369676e20636572743a0c0102030040746573742e6578616d706c652e636f6d0001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+        let expected = "44706c65617365207369676e20636572743a0c0102030040746573742e6578616d706c652e636f6d000100000000040900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
         assert_eq!(actual, expected);
     }
 
@@ -663,12 +664,10 @@ mod tests {
                 ext_quote: true,
             },
             attestation: Attestation {
-                mode: AttestationMode::DstackTdx,
-                tdx_quote: Some(TdxQuote {
+                quote: AttestationQuote::DstackTdx(TdxQuote {
                     quote: vec![9],
                     event_log: vec![],
                 }),
-                tpm_quote: None,
                 runtime_events: vec![],
                 report_data: [0u8; 64],
                 config: "".into(),
@@ -678,7 +677,7 @@ mod tests {
         };
 
         let actual = hex::encode(csr.encode());
-        let expected = "44706c65617365207369676e20636572743a0c0102030040746573742e6578616d706c652e636f6d0001000100000104090000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+        let expected = "44706c65617365207369676e20636572743a0c0102030040746573742e6578616d706c652e636f6d000100010000040900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
         assert_eq!(actual, expected);
     }
 }
