@@ -351,6 +351,11 @@ struct GetKeysArgs {
     /// Output file path (default: stdout as JSON)
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Root CA certificate (PEM format) to pin for TLS verification.
+    /// If not provided, TLS certificate verification is skipped for the initial connection.
+    #[arg(long)]
+    root_ca: Option<PathBuf>,
 }
 
 fn pad64(data: &[u8]) -> Result<[u8; 64]> {
@@ -533,7 +538,7 @@ fn cmd_attest_strip(args: AttestStripArgs) -> Result<()> {
 
 async fn cmd_get_keys(args: GetKeysArgs) -> Result<()> {
     use dstack_kms_rpc::kms_client::KmsClient;
-    use ra_rpc::client::{RaClient, RaClientConfig};
+    use ra_rpc::client::RaClientConfig;
 
     let kms_url = if args.kms_url.ends_with("/prpc") {
         args.kms_url.clone()
@@ -541,10 +546,30 @@ async fn cmd_get_keys(args: GetKeysArgs) -> Result<()> {
         format!("{}/prpc", args.kms_url.trim_end_matches('/'))
     };
 
+    // Load root CA if provided for TLS pinning
+    let root_ca_pem = if let Some(root_ca_path) = &args.root_ca {
+        let pem = fs::read_to_string(root_ca_path)
+            .with_context(|| format!("failed to read root CA from {}", root_ca_path.display()))?;
+        Some(pem)
+    } else {
+        None
+    };
+
     // Step 1: Get temporary CA certificate
     eprintln!("Connecting to KMS: {kms_url}");
+    let tls_no_check = root_ca_pem.is_none();
+    if tls_no_check {
+        eprintln!("Warning: no --root-ca provided, TLS certificate verification is disabled for initial connection");
+    }
     let tmp_ca = {
-        let client = RaClient::new(kms_url.clone(), true)?;
+        let client = RaClientConfig::builder()
+            .remote_uri(kms_url.clone())
+            .tls_no_check(tls_no_check)
+            .tls_built_in_root_certs(false)
+            .maybe_tls_ca_cert(root_ca_pem.clone())
+            .build()
+            .into_client()
+            .context("failed to create client")?;
         let kms_client = KmsClient::new(client);
         kms_client
             .get_temp_ca_cert()
