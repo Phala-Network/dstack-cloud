@@ -268,6 +268,7 @@ curl --unix-socket /var/run/dstack.sock -X POST \
 ### 8. Attest
 
 Generates a versioned attestation with the given report data. Returns a dstack-defined attestation format that supports different attestation modes across platforms.
+You can submit the returned `attestation` directly to the verifier `/verify` endpoint.
 
 **Endpoint:** `/Attest`
 
