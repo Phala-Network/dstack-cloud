@@ -1,7 +1,7 @@
 version = 1
 SPDX-PackageName = "dstack"
 SPDX-PackageSupplier = "Phala Network <dstack@phala.network>"
-SPDX-PackageDownloadLocation = "https://github.com/Dstack-TEE/dstack"
+SPDX-PackageDownloadLocation = "https://github.com/Phala-Network/dstack-cloud"
 
 # Non source files
 

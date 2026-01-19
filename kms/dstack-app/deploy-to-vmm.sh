@@ -44,7 +44,7 @@ VERIFY_IMAGE=true
 ETH_RPC_URL=https://rpc.phala.network
 
 # The Git repository to deploy
-GIT_REPOSITORY=https://github.com/Dstack-TEE/dstack.git
+GIT_REPOSITORY=https://github.com/Phala-Network/dstack-cloud.git
 
 # The Git revision to deploy
 GIT_REV=HEAD

@@ -17,7 +17,7 @@ RUN apt-get update && \
     libprotobuf-dev \
     clang \
     libclang-dev
-RUN git clone https://github.com/Dstack-TEE/dstack.git && \
+RUN git clone https://github.com/Phala-Network/dstack-cloud.git && \
     cd dstack && \
     git checkout ${DSTACK_REV}
 RUN rustup target add x86_64-unknown-linux-musl

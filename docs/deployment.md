@@ -121,7 +121,7 @@ For production, deploy KMS and Gateway as CVMs with hardware-rooted security. Pr
 Clone and build dstack-vmm:
 
 ```bash
-git clone https://github.com/Dstack-TEE/dstack
+git clone https://github.com/Phala-Network/dstack-cloud
 cd dstack
 cargo build --release -p dstack-vmm -p supervisor
 mkdir -p vmm-data
