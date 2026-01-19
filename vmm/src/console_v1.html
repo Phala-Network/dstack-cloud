@@ -1,6 +1,6 @@
 <!--
 SPDX-FileCopyrightText: © 2024-2025 Phala Network <dstack@phala.network>
-SPDX-License-Identifier: Apache-2.0
+SPDX-License-Identifier: BUSL-1.1
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
   <title>{{TITLE}}</title>
   <style>
 /* SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-   SPDX-License-Identifier: Apache-2.0 */
+   SPDX-License-Identifier: BUSL-1.1 */
 
 :root {
   --color-primary: #2563eb;
@@ -1575,7 +1575,7 @@ h1, h2, h3, h4, h5, h6 {
   const modules = {
 'build/ts/main.js': { factory: function(module, exports, require) {
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 const { createApp } = Vue;
 const App = require('./App');
 createApp(App).mount('#app');
@@ -1584,7 +1584,7 @@ createApp(App).mount('#app');
 'build/ts/App.js': { factory: function(module, exports, require) {
 "use strict";
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 const EncryptedEnvEditor = require('./components/EncryptedEnvEditor');
 const PortMappingEditor = require('./components/PortMappingEditor');
 const GpuConfigEditor = require('./components/GpuConfigEditor');
@@ -1614,7 +1614,7 @@ module.exports = AppComponent;
 'build/ts/components/EncryptedEnvEditor.js': { factory: function(module, exports, require) {
 "use strict";
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 const EncryptedEnvEditorComponent = {
     name: 'EncryptedEnvEditor',
     props: {
@@ -1767,7 +1767,7 @@ module.exports = EncryptedEnvEditorComponent;
 'build/ts/components/PortMappingEditor.js': { factory: function(module, exports, require) {
 "use strict";
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 const PortMappingEditorComponent = {
     name: 'PortMappingEditor',
     props: {
@@ -1881,7 +1881,7 @@ module.exports = PortMappingEditorComponent;
 'build/ts/components/GpuConfigEditor.js': { factory: function(module, exports, require) {
 "use strict";
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 const { computed } = Vue;
 const GpuConfigEditorComponent = {
     name: 'GpuConfigEditor',
@@ -1952,7 +1952,7 @@ module.exports = GpuConfigEditorComponent;
 'build/ts/components/CreateVmDialog.js': { factory: function(module, exports, require) {
 "use strict";
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 const EncryptedEnvEditor = require('./EncryptedEnvEditor');
 const PortMappingEditor = require('./PortMappingEditor');
 const GpuConfigEditor = require('./GpuConfigEditor');
@@ -2126,7 +2126,7 @@ module.exports = CreateVmDialogComponent;
 'build/ts/components/UpdateVmDialog.js': { factory: function(module, exports, require) {
 "use strict";
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 const EncryptedEnvEditor = require('./EncryptedEnvEditor');
 const PortMappingEditor = require('./PortMappingEditor');
 const GpuConfigEditor = require('./GpuConfigEditor');
@@ -2270,7 +2270,7 @@ module.exports = UpdateVmDialogComponent;
 'build/ts/components/ForkVmDialog.js': { factory: function(module, exports, require) {
 "use strict";
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 const ForkVmDialogComponent = {
     name: 'ForkVmDialog',
     props: {
@@ -2326,7 +2326,7 @@ module.exports = ForkVmDialogComponent;
 'build/ts/composables/useVmManager.js': { factory: function(module, exports, require) {
 "use strict";
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.useVmManager = useVmManager;
 const { ref, computed, watch, onMounted } = Vue;
@@ -5258,7 +5258,7 @@ module.exports = {
 'build/ts/lib/vmmRpcClient.js': { factory: function(module, exports, require) {
 "use strict";
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getVmmRpcClient = getVmmRpcClient;
 const { vmm } = require('../proto/vmm_rpc.js');

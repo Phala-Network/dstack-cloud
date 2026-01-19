@@ -22,6 +22,10 @@ dstack is the open framework for confidential AI - deploy AI applications with c
 
 AI providers ask users to trust them with sensitive data. But trust doesn't scale, and trust can't be verified. With dstack, your containers run inside confidential VMs (Intel TDX) with native support for NVIDIA Confidential Computing (H100, Blackwell). Users can cryptographically verify exactly what's running: private AI with your existing Docker workflow.
 
+### What is dstack-cloud?
+
+`dstack-cloud` is a commercial distribution of dstack. It primarily extends the open framework with additional support for cloud platforms such as Google Cloud (GCP) and AWS Nitro Enclaves.
+
 ### Features
 
 **Zero friction onboarding**
@@ -206,4 +210,6 @@ Logo and branding assets: [dstack-logo-kit](./docs/assets/dstack-logo-kit/)
 
 ## License
 
-Apache 2.0
+This repository is licensed under the Business Source License 1.1 (BUSL-1.1). Per the terms in [LICENSE](./LICENSE), the Licensed Work is `dstack-cloud`.
+
+By default, BUSL-1.1 permits copying, modification, redistribution, and **non-production** use. The license does not grant production use unless an Additional Use Grant is provided (this project specifies: None). If your intended use does not comply with BUSL-1.1, you must obtain a commercial license from Phala Network (or authorized resellers).

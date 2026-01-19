@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 import fs from 'fs/promises';
 import path from 'path';
@@ -238,7 +238,7 @@ async function build({ watch = false } = {}) {
           },
         ]);
         await fs.writeFile(distFile, rehtml);
-        const spdxHeader = '<!-- SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>\n     SPDX-License-Identifier: Apache-2.0 -->\n';
+        const spdxHeader = '<!-- SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>\n     SPDX-License-Identifier: BUSL-1.1 -->\n';
         await fs.writeFile(targetFile, spdxHeader + rehtml);
         console.log('Rebuilt console');
       } catch (err) {
