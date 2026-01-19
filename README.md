@@ -59,7 +59,7 @@ services:
       - "8000:8000"
 ```
 
-Deploy to any TDX host with the [`dstack-nvidia-0.5.x` base image](https://github.com/Dstack-TEE/meta-dstack/releases), or use [Phala Cloud](https://cloud.phala.network) for managed infrastructure.
+Deploy to any TDX host with the [`dstack-nvidia-0.6.x` base image](https://github.com/Phala-Network/meta-dstack-cloud/releases), or use [Phala Cloud](https://cloud.phala.network) for managed infrastructure.
 
 Want to deploy a self hosted dstack? Check our [full deployment guide →](./docs/deployment.md)
 

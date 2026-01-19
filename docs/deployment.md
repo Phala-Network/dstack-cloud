@@ -43,7 +43,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ### Build Configuration
 
 ```bash
-git clone https://github.com/Dstack-TEE/meta-dstack.git --recursive
+git clone https://github.com/Phala-Network/meta-dstack-cloud.git --recursive
 cd meta-dstack/
 mkdir build && cd build
 ../build.sh hostcfg
@@ -157,7 +157,7 @@ address = "vsock:2"
 port = 10000
 ```
 
-Download guest images from [meta-dstack releases](https://github.com/Dstack-TEE/meta-dstack/releases) and extract to `./images/`.
+Download guest images from [meta-dstack releases](https://github.com/Phala-Network/meta-dstack-cloud/releases) and extract to `./images/`.
 
 > For reproducible builds and verification, see the [Security Model](./security/security-model.md).
 
@@ -249,7 +249,7 @@ AUTH_WEBHOOK_URL=http://your-auth-server:3001
 KMS_RPC_ADDR=0.0.0.0:9201
 GUEST_AGENT_ADDR=127.0.0.1:9205
 OS_IMAGE=dstack-0.5.5
-IMAGE_DOWNLOAD_URL=https://github.com/Dstack-TEE/meta-dstack/releases/download/v0.5.5/dstack-0.5.5.tar.gz
+IMAGE_DOWNLOAD_URL=https://github.com/Phala-Network/meta-dstack-cloud/releases/download/v0.5.5/dstack-0.5.5.tar.gz
 ```
 
 Then run:
