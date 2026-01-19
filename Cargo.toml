@@ -49,14 +49,11 @@ members = [
     "dstack-types",
     "cert-client",
     "lspci",
-    "sdk/rust",
-    "sdk/rust/types",
     "sodiumbox",
     "serde-duration",
     "dstack-mr",
     "dstack-mr/cli",
     "verifier",
-    "no_std_check",
     "size-parser",
 ]
 resolver = "2"
@@ -65,7 +62,6 @@ resolver = "2"
 # Internal dependencies
 ra-rpc = { path = "ra-rpc", default-features = false }
 ra-tls = { path = "ra-tls" }
-dstack-sdk-types = { path = "sdk/rust/types", version = "0.1.1", default-features = false }
 dstack-gateway-rpc = { path = "gateway/rpc" }
 dstack-kms-rpc = { path = "kms/rpc" }
 dstack-guest-agent-rpc = { path = "guest-agent/rpc" }
