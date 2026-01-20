@@ -104,9 +104,6 @@ if ! [[ -e /dev/tdx_guest ]]; then
 fi
 
 # Mount configfs for TSM (required for TDX quote generation)
-if [[ ! -d /sys/kernel/config ]]; then
-	mkdir -p /sys/kernel/config
-fi
 if ! mountpoint -q /sys/kernel/config; then
 	log "Mounting configfs for TSM..."
 	mount -t configfs none /sys/kernel/config
