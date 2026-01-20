@@ -2,14 +2,20 @@ Business Source License 1.1
 
 Parameters
 
-Licensor:             Phala Network
-Licensed Work:        dstack-cloud
-                      The Licensed Work is (c) Phala Network
-Additional Use Grant: None
+Licensor:               Hashforest Technology LLC
 
-Change Date:          Four years from the date a MINOR version (SemVer) is published.
+Licensed Work:          dstack-cloud
+                        The Licensed Work is (c) Hashforest Technology LLC
 
-Change License:       GNU Affero General Public License Version 3 (AGPL-3.0-only)
+Additional Use Grant:   Notwithstanding the foregoing, the Licensor grants
+                        to certain commercial partners a license to use the
+                        Licensed Work for production and commercial purposes
+                        pursuant to separate agreements.
+
+Change Date:            Two years from the date a MINOR version (SemVer) is
+                        published.
+
+Change License:         GNU Affero General Public License Version 3 (AGPL-3.0)
 
 Notice
 
