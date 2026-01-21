@@ -1137,9 +1137,9 @@ checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
 
 [[package]]
 name = "dcap-qvl"
-version = "0.3.8"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82f4049f76ea6a67262a7501b82f9cda2425c022a86b45902d195d70fa67a4f7"
+checksum = "6b2e21006fbf3e2cb1b2b17aaa72ecaa4039ccca69ff8d79c53076c0da1ac374"
 dependencies = [
  "anyhow",
  "asn1_der",
@@ -1154,15 +1154,16 @@ dependencies = [
  "futures",
  "hex",
  "log",
+ "p256",
  "parity-scale-codec",
  "pem",
  "reqwest",
- "ring",
- "rustls-webpki 0.102.8",
+ "rustls-pki-types",
  "scale-info",
  "serde",
  "serde-human-bytes",
  "serde_json",
+ "sha2 0.10.9",
  "tracing",
  "urlencoding",
  "wasm-bindgen-futures",
@@ -1171,12 +1172,19 @@ dependencies = [
 
 [[package]]
 name = "dcap-qvl-webpki"
-version = "0.103.3"
+version = "0.103.4+dcap.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70ebdcd097c369fe3422cf3978540e0406148435ec0f4d8ecbbf201c746f19c9"
+checksum = "d0af040afe66c4f26ca05f308482d98bd75a35a80a227d877c2e28c9947a9fa6"
 dependencies = [
+ "ecdsa",
+ "ed25519-dalek",
+ "p256",
+ "p384",
  "ring",
+ "rsa",
  "rustls-pki-types",
+ "sha2 0.10.9",
+ "signature",
  "untrusted 0.9.0",
 ]
 
@@ -3740,7 +3748,6 @@ dependencies = [
  "pem",
  "reqwest",
  "rustls-pki-types",
- "rustls-webpki 0.103.8",
  "serde",
  "sha2 0.10.9",
  "tokio",
@@ -5154,6 +5161,7 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "rand_core 0.6.4",
+ "sha2 0.10.9",
  "signature",
  "spki",
  "subtle",
@@ -5233,7 +5241,7 @@ dependencies = [
  "once_cell",
  "ring",
  "rustls-pki-types",
- "rustls-webpki 0.103.8",
+ "rustls-webpki",
  "subtle",
  "zeroize",
 ]
@@ -5267,17 +5275,6 @@ checksum = "708c0f9d5f54ba0272468c1d306a52c495b31fa155e91bc25371e6df7996908c"
 dependencies = [
  "web-time",
  "zeroize",
-]
-
-[[package]]
-name = "rustls-webpki"
-version = "0.102.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64ca1bc8749bd4cf37b5ce386cc146580777b4e8572c7b97baf22c83f444bee9"
-dependencies = [
- "ring",
- "rustls-pki-types",
- "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -6612,7 +6609,6 @@ dependencies = [
  "reqwest",
  "rsa",
  "rustls-pki-types",
- "rustls-webpki 0.103.8",
  "serde",
  "serde_json",
  "sha2 0.10.9",

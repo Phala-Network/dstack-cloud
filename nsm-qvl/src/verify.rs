@@ -183,7 +183,7 @@ fn verify_certificate_chain(
 
     if let Some(root_ca_crl) = &collateral.root_ca_crl {
         let crl_refs = vec![root_ca_crl.as_slice()];
-        dcap_qvl_webpki::check_single_cert_crl(root_cert_der.as_ref(), &crl_refs, time)
+        webpki::check_single_cert_crl(root_cert_der.as_ref(), &crl_refs, time)
             .context("root CA revoked or invalid CRL")?;
     }
 
