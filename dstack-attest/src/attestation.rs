@@ -29,8 +29,13 @@ pub use tpm_types::TpmQuote;
 const DSTACK_TDX: &str = "dstack-tdx";
 const DSTACK_GCP_TDX: &str = "dstack-gcp-tdx";
 const DSTACK_NITRO_ENCLAVE: &str = "dstack-nitro-enclave";
+
 #[cfg(feature = "quote")]
 const SYS_CONFIG_PATH: &str = "/dstack/.host-shared/.sys-config.json";
+
+/// Global lock for quote generation. The underlying TDX driver does not support concurrent access.
+#[cfg(feature = "quote")]
+static QUOTE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Read vm_config from sys-config.json
 #[cfg(feature = "quote")]
@@ -417,10 +422,13 @@ impl<T> Attestation<T> {
             .map(|q| serde_json::to_vec(&q.event_log).unwrap_or_default())
     }
 
-    /// Get TDX event log string
+    /// Get TDX event log string with RTMR[0-2] payloads stripped to reduce size.
+    /// Only digests are kept for boot-time events; runtime events (RTMR3) retain full payload.
     pub fn get_tdx_event_log_string(&self) -> Option<String> {
-        self.tdx_quote()
-            .map(|q| serde_json::to_string(&q.event_log).unwrap_or_default())
+        self.tdx_quote().map(|q| {
+            let stripped: Vec<_> = q.event_log.iter().map(|e| e.stripped()).collect();
+            serde_json::to_string(&stripped).unwrap_or_default()
+        })
     }
 
     pub fn get_td10_report(&self) -> Option<TDReport10> {
@@ -705,6 +713,11 @@ impl Attestation {
     }
 
     pub fn quote_with_app_id(report_data: &[u8; 64], app_id: Option<[u8; 20]>) -> Result<Self> {
+        // Lock to prevent concurrent quote generation (TDX driver doesn't support it)
+        let _guard = QUOTE_LOCK
+            .lock()
+            .map_err(|_| anyhow!("Quote lock poisoned"))?;
+
         let mode = AttestationMode::detect()?;
         let runtime_events = if mode.is_composable() {
             RuntimeEvent::read_all().context("Failed to read runtime events")?

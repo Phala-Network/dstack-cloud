@@ -5,13 +5,16 @@
 use anyhow::bail;
 use std::path::PathBuf;
 
-use fs_err as fs;
-use thiserror::Error;
-
 use crate::Result;
 use crate::TdxReportData;
+use fs_err as fs;
+use std::sync::Mutex;
+use thiserror::Error;
 
 mod configfs;
+
+/// Global lock for TDX attestation operations. The TDX driver does not support concurrent access.
+static TDX_LOCK: Mutex<()> = Mutex::new(());
 
 /// TSM measurements sysfs paths for RTMR extend (kernel 6.17+)
 const TSM_MEASUREMENTS_PATH: &str = "/sys/class/misc/tdx_guest/measurements";
@@ -39,6 +42,8 @@ pub enum TdxAttestError {
 /// This uses the kernel's TSM (Trusted Security Module) configfs interface
 /// at `/sys/kernel/config/tsm/report/` to generate attestation quotes.
 pub fn get_quote(report_data: &TdxReportData) -> Result<Vec<u8>> {
+    // Lock to prevent concurrent access - TDX driver doesn't support it
+    let _guard = TDX_LOCK.lock().map_err(|_| TdxAttestError::Busy)?;
     configfs::get_quote(report_data).map_err(|e| {
         log::error!("failed to get quote via configfs: {}", e);
         TdxAttestError::QuoteFailure
