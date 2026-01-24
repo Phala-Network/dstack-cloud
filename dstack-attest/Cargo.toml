@@ -32,6 +32,7 @@ nsm-qvl.workspace = true
 tpm-qvl.workspace = true
 tpm-types.workspace = true
 insta.workspace = true
+errify.workspace = true
 
 [features]
 quote = []
