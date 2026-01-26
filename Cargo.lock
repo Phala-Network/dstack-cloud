@@ -1699,6 +1699,7 @@ dependencies = [
  "dstack-gateway-rpc",
  "dstack-kms-rpc",
  "dstack-types",
+ "errify",
  "ez-hash",
  "fs-err",
  "getrandom 0.3.4",
@@ -1811,6 +1812,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "which 7.0.3",
 ]

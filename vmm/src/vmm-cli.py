@@ -520,6 +520,11 @@ class VmmCLI:
     def create_app_compose(self, args) -> None:
         """Create a new app compose file"""
         envs = parse_env_file(args.env_file) or {}
+
+        # Validate: --env-file requires --kms
+        if envs and not args.kms:
+            raise Exception("--env-file requires --kms to enable KMS for environment variable decryption")
+
         app_compose = {
             "manifest_version": 2,
             "name": args.name,
@@ -565,6 +570,17 @@ class VmmCLI:
 
         envs = parse_env_file(args.env_file)
 
+        # Validate: --env-file requires --kms-url and kms_enabled in compose
+        if envs:
+            if not args.kms_url:
+                raise Exception("--env-file requires --kms-url to encrypt environment variables")
+            try:
+                compose_json = json.loads(compose_content)
+                if not compose_json.get('kms_enabled', False):
+                    raise Exception("--env-file requires kms_enabled=true in the compose file (use --kms when creating compose)")
+            except json.JSONDecodeError:
+                pass  # Let the server handle invalid JSON
+
         # Read user config file if provided
         user_config = ""
         if args.user_config:
@@ -591,7 +607,7 @@ class VmmCLI:
             if swap_bytes > 0:
                 params["swap_size"] = swap_bytes
 
-        if args.ppcie:
+        if args.ppcie or (args.gpu and "all" in args.gpu):
             params["gpus"] = {
                 "attach_mode": "all"
             }
@@ -620,6 +636,10 @@ class VmmCLI:
 
     def update_vm_env(self, vm_id: str, envs: Dict[str, str], kms_urls: Optional[List[str]] = None) -> None:
         """Update environment variables for a VM"""
+        # Validate: requires --kms-url
+        if not kms_urls:
+            raise Exception("--kms-url is required to encrypt environment variables")
+
         envs = envs or {}
         # First get the VM info to retrieve the app_id
         vm_info_response = self.rpc_call('GetInfo', {'id': vm_id})
@@ -709,6 +729,10 @@ class VmmCLI:
         no_tee: Optional[bool] = None,
     ) -> None:
         """Update multiple aspects of a VM in one command"""
+        # Validate: --env-file requires --kms-url
+        if env_file and not kms_urls:
+            raise Exception("--env-file requires --kms-url to encrypt environment variables")
+
         updates = []
 
         # handle resize operations (vcpu, memory, disk, image)
@@ -831,8 +855,9 @@ class VmmCLI:
             upgrade_params["ports"] = port_mappings
 
         # handle GPU updates - only update if one of the GPU flags is set
-        if attach_all or no_gpus or gpu_slots is not None:
-            if attach_all:
+        gpu_all = gpu_slots and "all" in gpu_slots
+        if attach_all or gpu_all or no_gpus or gpu_slots is not None:
+            if attach_all or gpu_all:
                 gpu_config = {"attach_mode": "all"}
                 updates.append("GPUs (all)")
             elif no_gpus:
@@ -1264,7 +1289,7 @@ def main():
     deploy_parser.add_argument('--port', action='append', type=str,
                                help='Port mapping in format: protocol[:address]:from:to')
     deploy_parser.add_argument('--gpu', action='append', type=str,
-                               help='GPU slot to attach (can be used multiple times)')
+                               help='GPU slot to attach (can be used multiple times), or "all" to attach all GPUs')
     deploy_parser.add_argument('--ppcie', action='store_true',
                                help='Enable PPCIE (Protected PCIe) mode - attach all available GPUs')
     deploy_parser.add_argument('--pin-numa', action='store_true',
@@ -1407,7 +1432,7 @@ def main():
         "--gpu",
         action="append",
         type=str,
-        help="GPU slot to attach (can be used multiple times)",
+        help="GPU slot to attach (can be used multiple times), or \"all\" to attach all GPUs",
     )
     gpu_group.add_argument(
         "--ppcie",
