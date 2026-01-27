@@ -1,5 +1,7 @@
 # Deploying dstack
 
+> **This guide is for self-hosted deployments** on your own TDX hardware. For cloud deployments, see [Quickstart](./quickstart.md).
+
 This guide covers deploying dstack on bare metal TDX hosts.
 
 ## Overview
