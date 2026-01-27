@@ -1,5 +1,7 @@
 # Dstack Nitro Enclave Attestation Flow (NSM)
 
+> **AWS Nitro Support:** Attestation verification is fully implemented. For AWS deployment options, [book a call](https://calendly.com/aspect-ux/30min) with our team.
+
 This document describes how dstack produces and verifies attestation on AWS
 Nitro Enclaves using the NSM attestation document. It follows the
 implementation in `dstack-attest` and `nsm-qvl`.
