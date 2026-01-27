@@ -1,15 +1,16 @@
 // SPDX-FileCopyrightText: © 2024-2025 Phala Network <dstack@phala.network>
 //
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
+// Linux x86_64 with glibc or musl
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use linux::*;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux;
 
+// Fallback for non-Linux/non-x86_64 platforms (dummy implementation)
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 pub use dummy::*;
-
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 mod dummy;
 

@@ -6270,16 +6270,19 @@ version = "0.5.6"
 dependencies = [
  "anyhow",
  "cc-eventlog",
+ "dcap-qvl",
  "fs-err",
  "hex",
  "insta",
- "log",
+ "libc",
  "parity-scale-codec",
  "serde",
  "serde-human-bytes",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.17",
+ "tokio",
+ "vsock",
 ]
 
 [[package]]
