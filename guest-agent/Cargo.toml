@@ -54,3 +54,4 @@ tempfile.workspace = true
 rand.workspace = true
 or-panic.workspace = true
 cc-eventlog.workspace = true
+listenfd.workspace = true
