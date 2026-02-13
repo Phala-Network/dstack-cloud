@@ -77,8 +77,13 @@ impl OnboardRpc for OnboardHandler {
     }
 
     async fn onboard(self, request: OnboardRequest) -> Result<OnboardResponse> {
+        let source_url = if request.source_url.ends_with("/prpc") {
+            request.source_url.clone()
+        } else {
+            format!("{}/prpc", request.source_url.trim_end_matches('/'))
+        };
         let keys = Keys::onboard(
-            &request.source_url,
+            &source_url,
             &request.domain,
             self.state.config.onboard.quote_enabled,
             self.state.config.pccs_url.clone(),
