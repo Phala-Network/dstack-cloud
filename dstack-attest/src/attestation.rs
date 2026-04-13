@@ -574,8 +574,17 @@ impl AttestationV1 {
             PlatformEvidence::Tdx { quote, .. } => {
                 decode_mr_tdx_from_quote(boottime_mr, &mr_key_provider, quote, runtime_events)?
             }
-            PlatformEvidence::GcpTdx { .. } | PlatformEvidence::NitroEnclave { .. } => {
-                bail!("Unsupported attestation quote");
+            PlatformEvidence::GcpTdx { tpm_quote, .. } => decode_mr_gcp_tpm_from_v1(
+                boottime_mr,
+                &mr_key_provider,
+                &os_image_hash,
+                tpm_quote,
+                runtime_events,
+            )?,
+            PlatformEvidence::NitroEnclave { nsm_quote } => {
+                decode_mr_nitro_nsm_from_v1(&DstackNitroQuote {
+                    nsm_quote: nsm_quote.clone(),
+                })?
             }
         };
         let compose_hash = if platform_attestation_mode(&self.platform).is_composable() {
@@ -640,11 +649,60 @@ impl AttestationV1 {
                 verify_tdx_quote_with_events(pccs_url, quote, &runtime_events, &report_data)
                     .await?,
             ),
-            PlatformEvidence::GcpTdx { .. } | PlatformEvidence::NitroEnclave { .. } => {
-                bail!(
-                    "Unsupported attestation mode: {:?}",
-                    platform_attestation_mode(&platform)
-                );
+            PlatformEvidence::GcpTdx {
+                quote, tpm_quote, ..
+            } => {
+                let tdx_report =
+                    verify_tdx_quote_with_events(pccs_url, quote, &runtime_events, &report_data)
+                        .await?;
+                let tpm_report = tpm_qvl::get_collateral_and_verify(tpm_quote)
+                    .await
+                    .context("failed to verify TPM quote")?;
+                let qualifying_data = sha256(quote);
+                if tpm_report.attest.qualified_data != qualifying_data[..] {
+                    bail!("tpm qualified_data mismatch");
+                }
+                let pcr_ind: u32 = 14; // GcpTdx runtime PCR
+                let replayed_rt_pcr = cc_eventlog::replay_events::<Sha256>(&runtime_events, None);
+                let quoted_rt_pcr = tpm_report
+                    .get_pcr(pcr_ind)
+                    .context("no runtime PCR in TPM report")?;
+                if replayed_rt_pcr != quoted_rt_pcr[..] {
+                    bail!(
+                        "PCR{pcr_ind} mismatch, quoted: {}, replayed: {}",
+                        hex::encode(quoted_rt_pcr),
+                        hex::encode(replayed_rt_pcr),
+                    );
+                }
+                DstackVerifiedReport::DstackGcpTdx {
+                    tdx_report,
+                    tpm_report,
+                }
+            }
+            PlatformEvidence::NitroEnclave { nsm_quote } => {
+                let nsm = DstackNitroQuote {
+                    nsm_quote: nsm_quote.clone(),
+                };
+                let verified_report = nsm_qvl::verify_attestation(
+                    &nsm.nsm_quote,
+                    nsm_qvl::AWS_NITRO_ENCLAVES_ROOT_G1,
+                    None,
+                    _now,
+                )
+                .context("NSM attestation verification failed")?;
+                let Some(user_data) = verified_report.user_data.clone() else {
+                    bail!("NSM attestation document does not contain user_data");
+                };
+                if user_data != report_data[..] {
+                    bail!("NSM user_data does not match report_data");
+                }
+                let pcrs = nsm.decode_pcrs().context("failed to decode nitro pcrs")?;
+                DstackVerifiedReport::DstackNitroEnclave(NitroVerifiedReport {
+                    module_id: verified_report.module_id,
+                    pcrs,
+                    user_data,
+                    timestamp: verified_report.timestamp,
+                })
             }
         };
 
@@ -852,6 +910,43 @@ impl GetDeviceId for DstackVerifiedReport {
 struct Mrs {
     mr_system: [u8; 32],
     mr_aggregated: [u8; 32],
+}
+
+fn decode_mr_gcp_tpm_from_v1(
+    boottime_mr: bool,
+    mr_key_provider: &[u8],
+    os_image_hash: &[u8],
+    tpm_quote: &TpmQuote,
+    runtime_events: &[RuntimeEvent],
+) -> Result<Mrs> {
+    let mr_system = sha256([os_image_hash, mr_key_provider]);
+    let pcr0 = tpm_quote
+        .pcr_values
+        .iter()
+        .find(|p| p.index == 0)
+        .context("PCR 0 not found")?;
+    let pcr2 = tpm_quote
+        .pcr_values
+        .iter()
+        .find(|p| p.index == 2)
+        .context("PCR 2 not found")?;
+    let runtime_pcr =
+        cc_eventlog::replay_events::<Sha256>(runtime_events, boottime_mr.then_some("boot-mr-done"));
+    let mr_aggregated = sha256([&pcr0.value[..], &pcr2.value, &runtime_pcr]);
+    Ok(Mrs {
+        mr_system,
+        mr_aggregated,
+    })
+}
+
+fn decode_mr_nitro_nsm_from_v1(nsm_quote: &DstackNitroQuote) -> Result<Mrs> {
+    let pcrs = nsm_quote.decode_pcrs()?;
+    let mr_system = sha256([&pcrs.pcr0, &pcrs.pcr1, &pcrs.pcr2]);
+    let mr_aggregated = mr_system;
+    Ok(Mrs {
+        mr_system,
+        mr_aggregated,
+    })
 }
 
 fn decode_mr_tdx_from_quote(

@@ -4,9 +4,7 @@
 
 //! Integration test: verify Nitro Enclave attestation end-to-end
 
-use dstack_attest::attestation::{
-    AttestationQuote, DstackVerifiedReport, VersionedAttestation,
-};
+use dstack_attest::attestation::{AttestationQuote, DstackVerifiedReport, VersionedAttestation};
 use nsm_qvl::{AttestationDocument, CoseSign1};
 use std::time::{Duration, SystemTime};
 
