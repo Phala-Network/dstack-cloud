@@ -802,10 +802,10 @@ class VmmCLI:
             "key_provider_id": args.key_provider_id or "",
             "public_logs": args.public_logs,
             "public_sysinfo": args.public_sysinfo,
-            "allowed_envs": [k for k in envs.keys()],
             "no_instance_id": args.no_instance_id,
             "secure_time": args.secure_time,
         }
+        apply_env_metadata_to_compose(app_compose, envs)
         if args.key_provider:
             app_compose["key_provider"] = args.key_provider
         if args.prelaunch_script:
@@ -850,6 +850,8 @@ class VmmCLI:
                     raise Exception(
                         "--env-file requires kms_enabled=true in the compose file (use --kms when creating compose)"
                     )
+                apply_env_metadata_to_compose(compose_json, envs)
+                compose_content = json.dumps(compose_json, indent=4, ensure_ascii=False)
             except json.JSONDecodeError:
                 pass  # Let the server handle invalid JSON
 
@@ -942,19 +944,7 @@ class VmmCLI:
                 app_compose = json.loads(compose_file)
             except json.JSONDecodeError:
                 app_compose = {}
-            compose_changed = False
-            allowed_envs = list(envs.keys())
-            if app_compose.get("allowed_envs") != allowed_envs:
-                app_compose["allowed_envs"] = allowed_envs
-                compose_changed = True
-            launch_token_value = envs.get("APP_LAUNCH_TOKEN")
-            if launch_token_value is not None:
-                launch_token_hash = hashlib.sha256(
-                    launch_token_value.encode("utf-8")
-                ).hexdigest()
-                if app_compose.get("launch_token_hash") != launch_token_hash:
-                    app_compose["launch_token_hash"] = launch_token_hash
-                    compose_changed = True
+            compose_changed = apply_env_metadata_to_compose(app_compose, envs)
             if compose_changed:
                 payload["compose_file"] = json.dumps(
                     app_compose, indent=4, ensure_ascii=False
@@ -1105,19 +1095,7 @@ class VmmCLI:
                         app_compose = json.loads(compose_file_content)
                     except json.JSONDecodeError:
                         app_compose = {}
-                    compose_changed = False
-                    allowed_envs = list(envs.keys())
-                    if app_compose.get("allowed_envs") != allowed_envs:
-                        app_compose["allowed_envs"] = allowed_envs
-                        compose_changed = True
-                    launch_token_value = envs.get("APP_LAUNCH_TOKEN")
-                    if launch_token_value is not None:
-                        launch_token_hash = hashlib.sha256(
-                            launch_token_value.encode("utf-8")
-                        ).hexdigest()
-                        if app_compose.get("launch_token_hash") != launch_token_hash:
-                            app_compose["launch_token_hash"] = launch_token_hash
-                            compose_changed = True
+                    compose_changed = apply_env_metadata_to_compose(app_compose, envs)
                     if compose_changed:
                         upgrade_params["compose_file"] = json.dumps(
                             app_compose, indent=4, ensure_ascii=False
@@ -1499,6 +1477,33 @@ def save_whitelist(whitelist: List[str]) -> None:
     os.makedirs(os.path.dirname(DEFAULT_KMS_WHITELIST_PATH), exist_ok=True)
     with open(DEFAULT_KMS_WHITELIST_PATH, "w") as f:
         json.dump({"trusted_signers": whitelist}, f, indent=2)
+
+
+def apply_env_metadata_to_compose(
+    app_compose: Dict[str, Any], envs: Optional[Dict[str, str]]
+) -> bool:
+    """Sync compose metadata derived from encrypted env vars."""
+    envs = envs or {}
+    changed = False
+
+    allowed_envs = list(envs.keys())
+    if app_compose.get("allowed_envs") != allowed_envs:
+        app_compose["allowed_envs"] = allowed_envs
+        changed = True
+
+    launch_token_value = envs.get("APP_LAUNCH_TOKEN")
+    if launch_token_value is not None:
+        launch_token_hash = hashlib.sha256(
+            launch_token_value.encode("utf-8")
+        ).hexdigest()
+        if app_compose.get("launch_token_hash") != launch_token_hash:
+            app_compose["launch_token_hash"] = launch_token_hash
+            changed = True
+    elif "launch_token_hash" in app_compose:
+        del app_compose["launch_token_hash"]
+        changed = True
+
+    return changed
 
 
 def main():

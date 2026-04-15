@@ -46,6 +46,10 @@ If you use dstack-vmm's built-in UI, the prelaunch script has already been autom
 
 You only need to add the `APP_LAUNCH_TOKEN` environment variable to enable LAUNCH_TOKEN checking.
 
+If you use the CLI, `vmm-cli.py compose`, `deploy`, `update`, and `update-env` also
+sync `launch_token_hash` automatically whenever `APP_LAUNCH_TOKEN` is present in
+`--env-file`.
+
 ![Token Environment Variable](../assets/token-env.png)
 
 user_config is not encrypted, and similarly requires integrity checks at the application layer. For example, you can store a USER_CONFIG_HASH in encrypted environment variables and verify it in the prelaunch script.
