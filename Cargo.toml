@@ -16,6 +16,8 @@ repository = "https://github.com/Dstack-TEE/dstack"
 members = [
     "kms",
     "kms/rpc",
+    "gcp-private/key-broker",
+    "gcp-private/launcher",
     "ra-rpc",
     "ra-tls",
     "tdx-attest",

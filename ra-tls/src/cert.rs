@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use fs_err as fs;
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, CustomExtension, DistinguishedName, DnType,
-    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PublicKeyData, SanType,
+    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PublicKeyData,
 };
 use ring::rand::SystemRandom;
 use ring::signature::{
@@ -351,7 +351,10 @@ pub struct CertRequest<'a, Key> {
 
 impl<Key> CertRequest<'_, Key> {
     fn into_cert_params(self) -> Result<CertificateParams> {
-        let mut params = CertificateParams::new(vec![])?;
+        // Pass alt_names to rcgen, which parses each entry into an IpAddress SAN
+        // when it's a valid IP literal and a DnsName SAN otherwise (synced from
+        // upstream dstack — lets the KMS rpc cert be valid for a bare IP).
+        let mut params = CertificateParams::new(self.alt_names.unwrap_or_default().to_vec())?;
         let mut dn = DistinguishedName::new();
         if let Some(org_name) = self.org_name {
             dn.push(DnType::OrganizationName, org_name);
@@ -368,13 +371,6 @@ impl<Key> CertRequest<'_, Key> {
             params
                 .extended_key_usages
                 .push(ExtendedKeyUsagePurpose::ClientAuth);
-        }
-        if let Some(alt_names) = self.alt_names {
-            for alt_name in alt_names {
-                params
-                    .subject_alt_names
-                    .push(SanType::DnsName(alt_name.clone().try_into()?));
-            }
         }
         if let Some(app_id) = self.app_id {
             add_ext(&mut params, PHALA_RATLS_APP_ID, app_id);
