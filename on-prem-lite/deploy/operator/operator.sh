@@ -226,7 +226,10 @@ do_license() { # app-id
 
     local t pid LP
     t="$(open_tunnel 9000)"; pid="${t%% *}"; LP="${t##* }"
-    trap 'kill "$pid" 2>/dev/null || true' RETURN
+    # self-clearing RETURN trap: kill the tunnel AND remove the trap when this
+    # function returns, so it never leaks to the caller's return (set -u would
+    # then trip on the now-unbound $pid). guard $pid for the same reason.
+    trap 'kill "${pid:-}" 2>/dev/null || true; trap - RETURN' RETURN
     c_step "opened IAP tunnel localhost:$LP → $WL_INSTANCE:9000"
     wait_healthz "$pid" "$LP" 9000
 
@@ -257,7 +260,10 @@ do_license() { # app-id
 tunnel_get() { # path
     local t pid LP
     t="$(open_tunnel 9000)"; pid="${t%% *}"; LP="${t##* }"
-    trap 'kill "$pid" 2>/dev/null || true' RETURN
+    # self-clearing RETURN trap: kill the tunnel AND remove the trap when this
+    # function returns, so it never leaks to the caller's return (set -u would
+    # then trip on the now-unbound $pid). guard $pid for the same reason.
+    trap 'kill "${pid:-}" 2>/dev/null || true; trap - RETURN' RETURN
     c_step "opened IAP tunnel localhost:$LP → $WL_INSTANCE:9000"
     # brief wait for the tunnel to be ready.
     for _ in $(seq 1 15); do

@@ -220,8 +220,10 @@ def main():
     if args.cmd in ("attest", "issue", "renew"):
         if not args.authority_url:
             die("--authority-url / AUTHORITY_URL required")
-        if not args.user_id:
-            die("--user-id / USER_ID required")
+        # user_id is OPTIONAL: the authority resolves the tenant from the api key.
+        # The api key IS required (it identifies the tenant for challenge/license).
+        if not args.api_key:
+            die("--api-key / AUTHORITY_API_KEY required")
         if not args.app_id:
             die("--app-id / APP_ID required")
         if not args.workload_image:

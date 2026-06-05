@@ -49,9 +49,6 @@ services:
       # license expiry policy.
       LICENSE_TTL_SECS: ${LICENSE_TTL_SECS:-2592000}
       LICENSE_GRACE_SECS: ${LICENSE_GRACE_SECS:-300}
-      # TEST-ONLY: skip the attested-app_id check (pre-#714 OS image forces app_id=
-      # compose_hash[:20]). MUST be empty in production.
-      LITE_TEST_SKIP_ATTESTED_APP_ID: ${LITE_TEST_SKIP_ATTESTED_APP_ID:-}
       # NOTE: all policy (launcher build G6, os-image hashes G4, apps, grants) is set
       # ONLY via the admin API (the vendor CLI registers it) — no env-seed.
     volumes:
