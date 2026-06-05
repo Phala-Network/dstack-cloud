@@ -382,7 +382,13 @@ def license(req: LicenseRequest, authorization: Optional[str] = Header(None)):
         },
         "seq": seq,
         "issued_at": now,
-        "not_before": now,
+        # backdate not_before by the grace period so a freshly-issued license is
+        # valid immediately despite modest authority↔launcher clock skew. the
+        # launcher already applies grace_period_secs to the expiry edge
+        # (now > expires_at + grace); this makes the validity window symmetric
+        # ([now-grace, expires_at+grace]) instead of hard-edged at the start,
+        # where a sub-second skew would otherwise fail-close G10.
+        "not_before": now - LICENSE_GRACE_SECS,
         "expires_at": expires_at,
         "grace_period_secs": LICENSE_GRACE_SECS,
     }
