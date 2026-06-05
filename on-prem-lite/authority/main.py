@@ -1,16 +1,25 @@
 # SPDX-FileCopyrightText: © 2025 Phala Network <dstack@phala.network>
 #
 # SPDX-License-Identifier: Apache-2.0
-"""on-prem-lite vendor authority (KMS-less, license-based).
+"""on-prem-lite vendor authority (KMS-less, license-based, app-centric).
 
 Issues a per-workload {sealed_cek, License} to an attested launcher CVM:
 verifies the launcher's TDX+vTPM quote via dstack-verifier (fail-closed gates),
 HPKE-seals the image private key (CEK) to the launcher's transport key, and
-Ed25519-signs a License with an expiry. See on-prem-lite/DESIGN.md for the wire
-contract; a Rust launcher verifies the License signature and HPKE-opens the CEK.
+Ed25519-signs a License with an expiry. See on-prem-lite/REDESIGN.md for the
+wire contract; a Rust launcher verifies the License signature and HPKE-opens the
+CEK.
+
+Model: all apps share ONE launcher build (one compose_hash). Each app is an
+authority-assigned random 40-hex app_id deployed (deploy-time) into that shared
+launcher; the CVM attests it. The authority gates BOTH the launcher build
+(compose_hash, G6) and the app (attested app_id == request app_id == registered
+app, tenant granted, G6b), then gates the workload digest against the app's image
+whitelist (G7) and seals that version's CEK.
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -27,32 +36,37 @@ from crypto import (
     verify_challenge,
 )
 from models import (
+    AddImageRequest,
+    AddImageResponse,
     ChallengeRequest,
     ChallengeResponse,
     CreateAppRequest,
     CreateAppResponse,
-    CreateTenantRequest,
-    CreateTenantResponse,
+    CreateUserRequest,
+    CreateUserResponse,
+    GrantRequest,
+    GrantResponse,
     HashRequest,
     LicenseRequest,
     LicenseResponse,
-    MintKeyRequest,
-    MintKeyResponse,
-    RegisterWorkloadRequest,
+    MintCekRequest,
+    MintCekResponse,
+    SetLauncherRequest,
+    SetLauncherResponse,
 )
 from store import Store
 from verifier_client import VerifierError, compute_report_data, verify_attestation
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="dstack on-prem-lite authority", version="0.1.0")
+app = FastAPI(title="dstack on-prem-lite authority", version="0.2.0")
 store = Store()
 
 # ─── auth ─────────────────────────────────────────────────────────────────────
-# admin endpoints are gated by AUTHORITY_ADMIN_TOKEN; operator endpoints
-# (challenge / license) require a per-tenant bearer API key. The admin token is
-# REQUIRED — without it the authority refuses to serve (fail-closed): there is no
-# open/dev mode in this profile.
+# admin endpoints are gated by AUTHORITY_ADMIN_TOKEN; tenant endpoints
+# (challenge / bundle / license) require a per-tenant bearer API key. The admin
+# token is REQUIRED — without it the authority refuses to serve (fail-closed):
+# there is no open/dev mode in this profile.
 ADMIN_TOKEN = os.getenv("AUTHORITY_ADMIN_TOKEN", "")
 
 # Attestation verification via the repo's dstack-verifier service. A license is
@@ -66,7 +80,7 @@ LICENSE_TTL_SECS = int(os.getenv("LICENSE_TTL_SECS", str(86400 * 30)))   # 30d
 LICENSE_GRACE_SECS = int(os.getenv("LICENSE_GRACE_SECS", "300"))
 
 if not ADMIN_TOKEN:
-    logger.warning("AUTHORITY_ADMIN_TOKEN unset — admin + operator endpoints are FAIL-CLOSED "
+    logger.warning("AUTHORITY_ADMIN_TOKEN unset — admin + tenant endpoints are FAIL-CLOSED "
                    "(refused with 503) until it is set")
 
 
@@ -118,12 +132,60 @@ def authority_pubkey():
     return {"pubkey": base64.b64encode(get_authority_pubkey_bytes()).decode()}
 
 
+# ─── tenant: challenge ────────────────────────────────────────────────────────
+
 @app.post("/api/v1/challenge", response_model=ChallengeResponse)
 def challenge(req: ChallengeRequest, authorization: Optional[str] = Header(None)):
     """Issue a stateless (HMAC) challenge nonce for the courier attest flow."""
     tenant_id = resolve_tenant(req.user_id, authorization)  # authenticates caller
     nonce = issue_challenge(tenant_id)
     return ChallengeResponse(nonce=nonce, authority_ts=int(time.time()))
+
+
+# ─── tenant: bundle ───────────────────────────────────────────────────────────
+
+@app.get("/api/v1/app/{app_id}/bundle")
+def app_bundle(app_id: str, authorization: Optional[str] = Header(None)):
+    """Return the deploy bundle for an app the tenant is granted: the single
+    launcher build (docker_compose/app_json/prelaunch + compose_hash), the
+    authority pubkey, the lite-launcher ref/digest, and the app's image_name +
+    its latest registered version (dst_ref + digest)."""
+    tenant_id = resolve_tenant("", authorization)
+    app_id = (app_id or "").lower()
+    if not store.is_granted(tenant_id, app_id):
+        raise HTTPException(status_code=403,
+                            detail=f"tenant '{tenant_id}' not granted app {app_id}")
+    app_rec = store.get_app_by_id(app_id)
+    if app_rec is None:
+        raise HTTPException(status_code=404, detail=f"app not found: {app_id}")
+    launcher = store.get_launcher()
+    if launcher is None:
+        raise HTTPException(status_code=503,
+                            detail="no launcher build registered (fail-closed); vendor must POST /admin/launcher")
+    image_name = app_rec["image_name"]
+    latest = store.get_image_latest(image_name)
+    if latest is None:
+        raise HTTPException(status_code=503,
+                            detail=f"no registered image version for {image_name} (fail-closed)")
+    return {
+        "app_id": app_rec["app_id"],
+        "app_name": app_rec["app_name"],
+        "docker_compose": launcher["docker_compose"],
+        "app_json": launcher["app_json"],
+        "prelaunch": launcher["prelaunch"],
+        "compose_hash": launcher["compose_hash"],
+        "authority_pubkey": base64.b64encode(get_authority_pubkey_bytes()).decode(),
+        "lite_launcher": {
+            "dst_ref": launcher["lite_launcher_dst"],
+            "digest": launcher["lite_launcher_digest"],
+        },
+        "workload": {
+            "image_name": image_name,
+            "dst_ref": latest["dst_ref"],
+            "digest": latest["digest"],
+        },
+        "usage_text": app_rec.get("usage_text") or "",
+    }
 
 
 def _verify_launcher_attestation(req: LicenseRequest, tenant_id: str) -> tuple:
@@ -183,8 +245,7 @@ def _verify_launcher_attestation(req: LicenseRequest, tenant_id: str) -> tuple:
         raise HTTPException(status_code=403, detail=f"unacceptable tcb_status: {tcb}")
 
     # G4: os-image hash — FAIL-CLOSED (empty whitelist ⇒ deny). Register the
-    # vendor-approved os_image_hash via POST /api/v1/admin/os-images (the vendor
-    # reads it from the OS release's auth_hash.txt; vendor-release.sh does this).
+    # vendor-approved os_image_hash via POST /api/v1/admin/os-images.
     if not allowed_os:
         raise HTTPException(status_code=403,
                             detail="no approved os_image_hash (fail-closed; register one via "
@@ -210,37 +271,37 @@ def _verify_launcher_attestation(req: LicenseRequest, tenant_id: str) -> tuple:
         raise HTTPException(status_code=403,
                             detail=f"key_provider must be tpm, got '{kp_name or 'unknown'}'")
 
-    # G6: launcher compose_hash ∈ the runtime-managed whitelist (fail-closed: empty ⇒ deny).
+    # G6: launcher compose_hash == the single registered launcher build's
+    # compose_hash (fail-closed: no launcher registered ⇒ deny).
     compose_hash = (app_info.get("compose_hash") or "").lower()
     if not compose_hash:
         raise HTTPException(status_code=403, detail="compose_hash missing from attestation")
-    allowed_compose = store.get_launcher_compose_hashes()
-    if not allowed_compose:
+    launcher = store.get_launcher()
+    if launcher is None:
         raise HTTPException(status_code=403,
-                            detail="no approved launcher compose_hash (fail-closed; add one via "
-                                   "POST /api/v1/admin/launcher-compose-hashes)")
-    if compose_hash not in allowed_compose:
-        raise HTTPException(status_code=403, detail="compose_hash not in launcher whitelist")
+                            detail="no registered launcher build (fail-closed; vendor must "
+                                   "POST /api/v1/admin/launcher)")
+    if compose_hash != (launcher["compose_hash"] or "").lower():
+        raise HTTPException(status_code=403, detail="compose_hash does not match the registered launcher build")
 
-    # G6b: app_id. NOTE on the `key_provider=tpm` profile the attested app_id is
-    # DERIVED from compose_hash (= compose_hash[:40]); it is NOT an independently
-    # settable measured value (that requires the KMS/on-chain registry, which the
-    # lite profile drops). So app_id here is an authority-side LABEL — the operator
-    # names the app it is deploying, and we require that app to be REGISTERED under
-    # this tenant (and gate the workload digest against THAT app's whitelist below).
-    # The *measured* identity is compose_hash (G6, enforced above). We record the
-    # attested (compose-derived) app_id for audit but don't compare it to the label.
+    # G6b: app_id. With #714 the attested app_id is a deploy-time-pinned measured
+    # value. We require: attested app_id == request app_id, the app is registered,
+    # and the tenant is granted it. (The measured launcher build is gated by G6.)
     attested_app_id = (app_info.get("app_id") or "").lower()
     req_app_id = (req.app_id or "").lower()
     if not req_app_id:
-        raise HTTPException(status_code=403, detail="app_id (label) required")
-    if not store.is_registered_app(tenant_id, req_app_id):
+        raise HTTPException(status_code=403, detail="app_id required")
+    if attested_app_id != req_app_id:
         raise HTTPException(status_code=403,
-                            detail=f"app_id not registered under tenant: {req_app_id}")
+                            detail=f"attested app_id '{attested_app_id or 'none'}' != request app_id '{req_app_id}'")
+    if store.get_app_by_id(req_app_id) is None:
+        raise HTTPException(status_code=403, detail=f"app_id not registered: {req_app_id}")
+    if not store.is_granted(tenant_id, req_app_id):
+        raise HTTPException(status_code=403,
+                            detail=f"tenant '{tenant_id}' not granted app {req_app_id}")
 
     logger.info("license %s: gates OK (quote✓ report_data✓ tcb✓ key_provider=tpm✓ "
-                "compose_hash✓ app_label=%s attested_app_id=%s)",
-                tenant_id, req_app_id, attested_app_id)
+                "compose_hash✓ app_id=%s)", tenant_id, req_app_id)
     return req_app_id, compose_hash
 
 
@@ -266,150 +327,191 @@ def license(req: LicenseRequest, authorization: Optional[str] = Header(None)):
 
     if not req.transport_pub:
         raise HTTPException(status_code=400, detail="transport_pub required")
-    if not req.workload_digest:
-        raise HTTPException(status_code=400, detail="workload_digest required")
+    if not req.workload_image:
+        raise HTTPException(status_code=400, detail="workload_image required")
 
     # G1–G6b: verify attestation; returns the validated app_id + the launcher's
     # measured compose_hash (bound into the License so the launcher can check it
     # equals its own).
     app_id, attested_compose_hash = _verify_launcher_attestation(req, tenant_id)
 
-    # G7: requested workload_digest ∈ this app's allowed_workloads (fail-closed:
-    # empty ⇒ deny). The matched entry carries the kid → image keypair.
-    workload = store.find_allowed_workload(tenant_id, app_id, req.workload_digest)
-    if workload is None:
-        raise HTTPException(status_code=403,
-                            detail=f"workload_digest not allowed for app {app_id}: {req.workload_digest}")
+    app_rec = store.get_app_by_id(app_id)   # exists (checked in G6b)
+    image_name = app_rec["image_name"]
 
-    # look up the image keypair for that workload's kid; HPKE-seal its PRIVATE
-    # key PEM (the CEK) to the launcher transport key.
-    kid = workload.get("kid", "")
-    key_entry = store.get_key(kid)
-    if key_entry is None:
-        raise HTTPException(status_code=500, detail=f"image key not found for kid: {kid}")
-    sealed_cek = seal_cek(key_entry["priv_pem"], req.transport_pub)
+    # G7: resolve the workload digest. Default = the app's image latest. The digest
+    # must be a registered version of THIS app's image (registry-agnostic — gated
+    # by digest membership, not by registry prefix). The matched version carries
+    # the kid → CEK to seal.
+    workload_digest = (req.workload_digest or "").strip()
+    if not workload_digest:
+        latest = store.get_image_latest(image_name)
+        if latest is None:
+            raise HTTPException(status_code=403,
+                                detail=f"no registered image version for {image_name} (fail-closed)")
+        workload_digest = latest["digest"]
+    version = store.find_image_by_digest(image_name, workload_digest)
+    if version is None:
+        raise HTTPException(status_code=403,
+                            detail=f"workload_digest not a registered version of {image_name}: {workload_digest}")
+
+    # HPKE-seal the matched version's CEK (its private key PEM) to the launcher
+    # transport key.
+    kid = version["kid"]
+    cek = store.get_cek(kid)
+    if cek is None:
+        raise HTTPException(status_code=500, detail=f"cek not found for kid: {kid}")
+    sealed_cek = seal_cek(cek["priv_pem"], req.transport_pub)
 
     # build + Ed25519-sign the License.
     now = int(time.time())
-    ttl = store.license_ttl(tenant_id, LICENSE_TTL_SECS)
     seq = store.bump_license_seq(tenant_id, app_id)
+    expires_at = now + LICENSE_TTL_SECS
     license_obj = {
         "schema_version": 1,
         "license_id": f"{tenant_id}-{seq}",
         "tenant_id": tenant_id,
         "app_id": app_id,
-        # the launcher's measured compose (which launcher build). Empty only in
-        # the dev no-attestation path; the launcher additionally checks
-        # license.compose_hash == its own.
+        # the launcher's measured compose (which launcher build); the launcher
+        # additionally checks license.compose_hash == its own.
         "compose_hash": attested_compose_hash,
         "workload": {
-            "image": workload.get("image", ""),
-            "digest": workload.get("digest", req.workload_digest),
+            # operator's AR ref, signed verbatim; the digest is the security anchor.
+            "image": req.workload_image,
+            "digest": workload_digest,
             "kid": kid,
         },
         "seq": seq,
         "issued_at": now,
         "not_before": now,
-        "expires_at": now + ttl,
+        "expires_at": expires_at,
         "grace_period_secs": LICENSE_GRACE_SECS,
     }
     license_obj["authority_sig"] = sign_license(license_obj)
+    store.record_license_expiry(tenant_id, app_id, seq, expires_at)
 
-    logger.info("issued license %s seq=%d app=%s digest=%s kid=%s expires_at=%d",
-                license_obj["license_id"], seq, app_id, req.workload_digest, kid,
-                license_obj["expires_at"])
+    logger.info("issued license %s seq=%d app=%s image=%s digest=%s kid=%s expires_at=%d",
+                license_obj["license_id"], seq, app_id, image_name, workload_digest, kid, expires_at)
     return LicenseResponse(license=license_obj, sealed_cek=sealed_cek)
 
 
-# ─── admin: tenants & apps ────────────────────────────────────────────────────
+# ─── admin: ceks ──────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/admin/tenants", response_model=CreateTenantResponse)
-def create_tenant(req: CreateTenantRequest, _: None = Depends(require_admin)):
-    """Create a tenant. Returns the API key in plaintext exactly once."""
+@app.post("/api/v1/admin/ceks", response_model=MintCekResponse)
+def mint_cek(req: MintCekRequest, _: None = Depends(require_admin)):
+    """Mint an EC P-256 content-encryption keypair (CEK). Returns the PUBLIC key
+    — encrypt images to it with `skopeo copy --encryption-key jwe:<pub.pem>`. The
+    private key is never returned by the API."""
     try:
-        api_key = store.create_tenant(req.tenant_id, req.name or "")
+        entry = store.mint_cek((req.kid or "").strip())
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    logger.info("created tenant tenant_id=%s", req.tenant_id)
-    return CreateTenantResponse(tenant_id=req.tenant_id, api_key=api_key)
+    logger.info("minted cek kid=%s", entry["kid"])
+    return MintCekResponse(kid=entry["kid"], pub_pem=entry["pub_pem"])
 
 
-@app.post("/api/v1/admin/tenants/{tid}/apps", response_model=CreateAppResponse)
-def create_app(tid: str, req: CreateAppRequest, _: None = Depends(require_admin)):
-    """Register an app under a tenant (authority assigns a 40-hex app_id if omitted)."""
+@app.get("/api/v1/admin/ceks")
+def list_ceks(_: None = Depends(require_admin)):
+    """List ceks (kid + public key; private keys are never echoed)."""
+    return {"ceks": store.list_ceks()}
+
+
+# ─── admin: images ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/admin/images", response_model=AddImageResponse)
+def add_image(req: AddImageRequest, _: None = Depends(require_admin)):
+    """Register an (image_name, dst_ref, digest, kid) version. latest = newest."""
     try:
-        app_id = store.create_app(tid, (req.app_id or "").strip(), req.name or "")
+        entry = store.add_image_version(req.image_name, req.dst_ref, req.digest, req.kid)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    logger.info("created app tenant=%s app_id=%s", tid, app_id)
+    logger.info("registered image %s@%s kid=%s", req.image_name, req.digest, req.kid)
+    return AddImageResponse(image_name=entry["image_name"], digest=entry["digest"])
+
+
+@app.get("/api/v1/admin/images")
+def list_images(image_name: str, _: None = Depends(require_admin)):
+    """List the registered versions of image_name + its latest digest."""
+    versions = store.get_image_versions(image_name)
+    latest = store.get_image_latest(image_name)
+    return {"versions": versions, "latest_digest": latest["digest"] if latest else None}
+
+
+# ─── admin: launcher (the single trusted build) ───────────────────────────────
+
+@app.post("/api/v1/admin/launcher", response_model=SetLauncherResponse)
+def set_launcher(req: SetLauncherRequest, _: None = Depends(require_admin)):
+    """Store the single launcher build. The authority computes
+    compose_hash=sha256(app_compose_json) and registers it as the G6 whitelist
+    (replacing any prior launcher build)."""
+    compose_hash = hashlib.sha256(req.app_compose_json.encode()).hexdigest()
+    store.set_launcher(
+        compose_hash=compose_hash,
+        app_compose_json=req.app_compose_json,
+        docker_compose=req.docker_compose,
+        app_json=req.app_json,
+        prelaunch=req.prelaunch,
+        lite_launcher_dst=req.lite_launcher_dst,
+        lite_launcher_digest=req.lite_launcher_digest,
+    )
+    logger.info("registered launcher build compose_hash=%s", compose_hash)
+    return SetLauncherResponse(compose_hash=compose_hash)
+
+
+# ─── admin: users (tenants) ───────────────────────────────────────────────────
+
+@app.post("/api/v1/admin/users", response_model=CreateUserResponse)
+def create_user(req: CreateUserRequest, _: None = Depends(require_admin)):
+    """Create a tenant (operator account). Returns the API key in plaintext once."""
+    try:
+        api_key = store.create_tenant(req.user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    logger.info("created user user_id=%s", req.user_id)
+    return CreateUserResponse(user_id=req.user_id, api_key=api_key)
+
+
+# ─── admin: apps ──────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/admin/apps", response_model=CreateAppResponse)
+def create_app(req: CreateAppRequest, _: None = Depends(require_admin)):
+    """Register an app: authority assigns a random 40-hex app_id, binds it to an
+    image_name + usage_text."""
+    try:
+        app_id = store.create_app(req.app_name, req.image_name, req.usage_text or "")
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    logger.info("created app app_name=%s app_id=%s image=%s", req.app_name, app_id, req.image_name)
     return CreateAppResponse(app_id=app_id)
 
 
-@app.post("/api/v1/admin/tenants/{tid}/apps/{app_id}/workloads")
-def register_workload(tid: str, app_id: str, req: RegisterWorkloadRequest,
-                      _: None = Depends(require_admin)):
-    """Append (image,digest,kid) to an app's allowed_workloads + record current."""
+@app.get("/api/v1/admin/apps")
+def list_apps(_: None = Depends(require_admin)):
+    """List apps (app_id + app_name + image_name) — used by `install-cmd` to
+    resolve an app_name → app_id."""
+    return {"apps": store.list_apps()}
+
+
+# ─── admin: grants ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/admin/grants", response_model=GrantResponse)
+def grant_app(req: GrantRequest, _: None = Depends(require_admin)):
+    """Authorize a tenant for an app (app = app_name or app_id)."""
+    app_rec = store.get_app(req.app)
+    if app_rec is None:
+        raise HTTPException(status_code=404, detail=f"unknown app: {req.app}")
     try:
-        entry = store.register_workload(tid, app_id, req.image, req.digest, req.kid)
+        store.grant(req.user_id, app_rec["app_id"])
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    logger.info("registered workload tenant=%s app=%s digest=%s kid=%s",
-                tid, app_id, req.digest, req.kid)
-    return {"workload": entry}
+    logger.info("granted user=%s app=%s", req.user_id, app_rec["app_id"])
+    return GrantResponse(user_id=req.user_id, app_id=app_rec["app_id"])
 
 
-# ─── admin: image keys ────────────────────────────────────────────────────────
-
-@app.post("/api/v1/admin/keys", response_model=MintKeyResponse)
-def mint_key(req: MintKeyRequest, _: None = Depends(require_admin)):
-    """Mint an EC P-256 image keypair into the keystore. Returns the PUBLIC key
-    — encrypt images to it with `skopeo copy --encryption-key jwe:<pub.pem>`.
-    The private key (the CEK) is never returned by the API."""
-    try:
-        entry = store.mint_key((req.kid or "").strip())
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    logger.info("minted image key kid=%s", entry["kid"])
-    return MintKeyResponse(**entry)
-
-
-@app.get("/api/v1/admin/keys")
-def list_keys(_: None = Depends(require_admin)):
-    """List the keystore (kid + public key; private keys are never echoed)."""
-    return {"keys": store.list_keys()}
-
-
-# ─── admin: launcher compose-hash policy (G6) ─────────────────────────────────
-
-@app.post("/api/v1/admin/launcher-compose-hashes")
-def add_launcher_compose_hash(req: HashRequest, _: None = Depends(require_admin)):
-    """Approve a launcher compose_hash (which launcher build may run)."""
-    try:
-        lst = store.add_launcher_compose_hash(req.hash)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    logger.info("approved launcher compose_hash %s", req.hash)
-    return {"launcher_compose_hashes": lst}
-
-
-@app.get("/api/v1/admin/launcher-compose-hashes")
-def list_launcher_compose_hashes(_: None = Depends(require_admin)):
-    return {"launcher_compose_hashes": store.get_launcher_compose_hashes()}
-
-
-@app.delete("/api/v1/admin/launcher-compose-hashes/{h}")
-def remove_launcher_compose_hash(h: str, _: None = Depends(require_admin)):
-    if not store.remove_launcher_compose_hash(h):
-        raise HTTPException(status_code=404, detail=f"launcher compose_hash not found: {h}")
-    logger.info("removed launcher compose_hash %s", h)
-    return {"launcher_compose_hashes": store.get_launcher_compose_hashes()}
-
-
-# ─── admin: os-image policy (G4, optional) ────────────────────────────────────
+# ─── admin: os-image policy (G4) ──────────────────────────────────────────────
 
 @app.post("/api/v1/admin/os-images")
 def add_os_image(req: HashRequest, _: None = Depends(require_admin)):
-    """Approve an os-image hash (optional policy; enforced only when non-empty)."""
+    """Approve an os-image hash (G4 whitelist; fail-closed when empty)."""
     try:
         lst = store.add_os_image(req.hash)
     except ValueError as e:

@@ -44,13 +44,13 @@ services:
       # persistent Ed25519 License-signing key (stable pubkey across restarts;
       # the pubkey is pinned into the measured launcher compose).
       AUTHORITY_SIGNING_KEY_FILE: /data/signing.key
-      # single JSON store: tenants/apps/image-keys/policy.
-      AUTHORITY_LITE_STORE: /data/store.json
+      # single SQLite db: tenants/ceks/images/launcher/apps/grants/licenses/os_images.
+      AUTHORITY_LITE_DB: /data/authority.db
       # license expiry policy.
       LICENSE_TTL_SECS: ${LICENSE_TTL_SECS:-2592000}
       LICENSE_GRACE_SECS: ${LICENSE_GRACE_SECS:-300}
-      # NOTE: policy (launcher compose hashes G6, os-image hashes G4) is set ONLY via
-      # the admin API (vendor-release.sh reads config + registers it) — no env-seed.
+      # NOTE: all policy (launcher build G6, os-image hashes G4, apps, grants) is set
+      # ONLY via the admin API (the vendor CLI registers it) — no env-seed.
     volumes:
       - authority-lite-data:/data
       - ./authority:/app          # dev: live code; restart picks up edits w/o rebuild

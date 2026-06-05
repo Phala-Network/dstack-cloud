@@ -9,16 +9,20 @@ services:
       - /var/run/dstack.sock:/var/run/dstack.sock
       - lite-launcher-state:/var/lib/lite-launcher
     environment:
-      # measured (literal): pinned Ed25519 License-signing pubkey of the vendor Authority.
+      # measured (literal): pinned Ed25519 License-signing pubkey of the vendor authority.
+      # the launcher pins this to verify every License signature (G8).
       - LITE_AUTHORITY_PUBKEY=<PINNED_LITERAL_BASE64_AUTHORITY_PUBKEY>
-      # measured (literal): which app this launcher is (gates License.app_id + workload scope).
-      - DSTACK_APP_ID=<WORKLOAD_APP_ID_40_HEX>
       # courier port the operator's license-ctl reaches over the IAP tunnel.
       - LITE_PORT=9000
       # runtime-resolved by prelaunch.sh (the registry the launcher pulls the workload from).
       - DSTACK_REGISTRY=${DSTACK_REGISTRY}
       # persistent state dir: holds the installed-License seq high-water (anti-rollback).
       - LITE_STATE_DIR=/var/lib/lite-launcher
+
+# NOTE: this is the SINGLE shared launcher build — one compose_hash for every app.
+# the workload image is NOT referenced here; the launcher pulls image@digest itself
+# after a License is installed. app_id is NOT here either (it lives in app.json /
+# .instance-info so it doesn't perturb compose_hash) — the operator sets it at install.
 
 volumes:
   lite-launcher-state:

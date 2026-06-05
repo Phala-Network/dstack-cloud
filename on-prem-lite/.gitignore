@@ -3,8 +3,13 @@ __pycache__/
 store.json
 signing.key
 .env.authority
-deploy/
-config.env
 .image-key.pub.pem
 .authority-pubkey
 .release-manifest.env
+
+# deploy/ holds tracked code (operator.sh, templates/*, vendor/authority.sh) plus
+# per-host secrets and generated runtime dirs — ignore only the latter.
+deploy/vendor/.vendor-config
+deploy/operator/config.env
+deploy/operator/deploy-work/
+deploy/workload/

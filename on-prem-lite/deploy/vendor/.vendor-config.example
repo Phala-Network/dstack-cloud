@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Example .vendor-config for the vendor authority CLI (deploy/vendor/authority.sh).
+#
+# On the FIRST `./authority.sh launch`, a real .vendor-config is generated next to
+# the script (gitignored) with random secrets + defaults. This file documents the
+# keys; you normally do NOT create it by hand. The same file is passed to docker
+# compose via `--env-file`, so the ADMIN_TOKEN/NONCE_SECRET/SIGNING_KEY the CLI
+# uses for admin calls is exactly what the authority container sees.
+
+# Authority API base URL the CLI (and admin curls) reach. Default: http://localhost:8084
+AUTHORITY_URL=http://localhost:8084
+
+# Admin bearer token — sent as `Authorization: Bearer <token>` on every admin call,
+# and handed to the authority container as AUTHORITY_ADMIN_TOKEN. (openssl rand -hex 32)
+AUTHORITY_ADMIN_TOKEN=
+
+# HMAC secret for challenge nonces (AUTHORITY_NONCE_SECRET in the container). (openssl rand -hex 32)
+AUTHORITY_NONCE_SECRET=
+
+# Seed for the persistent Ed25519 License-signing key (AUTHORITY_SIGNING_KEY). (openssl rand -hex 32)
+AUTHORITY_SIGNING_KEY=
+
+# Ed25519 License-signing PUBLIC key (base64), fetched from GET /api/v1/authority-pubkey
+# on launch and pinned (literal) into the measured launcher compose.
+AUTHORITY_PUBKEY=
+
+# Vendor public registry the encrypted images / lite-launcher live in. Default: cr.kvin.wang
+PUBREG=cr.kvin.wang
+
+# Published OS image version (dotted, e.g. dstack-cloud-nvidia-0.6.1). Dashed form
+# (dots → dashes) is written into the launcher app.json os_image.
+OS_VERSION=
+
+# Source ref for the lite-launcher image; skopeo-inspected to pin its digest into the
+# launcher compose. Default: cr.kvin.wang/lite-launcher:latest
+LITE_LAUNCHER_REF=cr.kvin.wang/lite-launcher:latest

@@ -12,7 +12,7 @@ HPKE-opens the per-image CEK.
 
 Usage:
   license-ctl attest  --launcher-url URL --authority-url URL --user-id ID \
-                      --app-id ID --workload-digest sha256:… --api-key KEY
+                      --app-id ID --workload-image REF --workload-digest sha256:… --api-key KEY
   license-ctl renew   (same args/flow as attest — issues a fresh License)
   license-ctl status  --launcher-url URL
   license-ctl healthz --launcher-url URL
@@ -23,6 +23,7 @@ Environment variable equivalents (override with flags):
   AUTHORITY_API_KEY  api key for vendor authority (Bearer token)
   USER_ID            tenant / user identifier
   APP_ID             workload app id (40 hex)
+  WORKLOAD_IMAGE     operator AR ref for the workload image (registry not gated)
   WORKLOAD_DIGEST    encrypted workload image digest (sha256:…)
 """
 
@@ -116,6 +117,7 @@ def cmd_attest(args):
     resp = _post(s_auth, f"{authority}/api/v1/license", {
         "user_id":         uid,
         "app_id":          args.app_id,
+        "workload_image":  args.workload_image,
         "nonce":           nonce,
         "transport_pub":   transport_pub,
         "kms_ts":          kms_ts,
@@ -180,6 +182,9 @@ def _issue(p: argparse.ArgumentParser):
     p.add_argument("--app-id",
                    default=os.getenv("APP_ID", ""),
                    help="workload app id, 40 hex (env: APP_ID)")
+    p.add_argument("--workload-image",
+                   default=os.getenv("WORKLOAD_IMAGE", ""),
+                   help="operator AR ref for the workload image, registry not gated (env: WORKLOAD_IMAGE)")
     p.add_argument("--workload-digest",
                    default=os.getenv("WORKLOAD_DIGEST", ""),
                    help="encrypted workload image digest sha256:… (env: WORKLOAD_DIGEST)")
@@ -219,6 +224,8 @@ def main():
             die("--user-id / USER_ID required")
         if not args.app_id:
             die("--app-id / APP_ID required")
+        if not args.workload_image:
+            die("--workload-image / WORKLOAD_IMAGE required")
         if not args.workload_digest:
             die("--workload-digest / WORKLOAD_DIGEST required")
 

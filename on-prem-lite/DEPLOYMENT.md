@@ -1,147 +1,111 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # on-prem-lite deployment guide
 
-A role-split walkthrough for the **KMS-less single-CVM** profile: the vendor runs
-an Authority and ships an encrypted workload + a measured launcher compose; the
-operator deploys one workload CVM and licenses it over an IAP courier hop. See
-[DESIGN.md](DESIGN.md) for the protocol and the fail-closed gate table.
+A role-split runbook for the **KMS-less single-CVM** profile. The **vendor** runs an
+Authority, ships an encrypted workload image, and registers one measured launcher
+build (one `compose_hash` shared by all apps). The **operator** deploys one workload
+CVM, attests it, and installs a License over an IAP courier hop. See
+[DESIGN.md](DESIGN.md) for the protocol and the fail-closed gate table, and
+[REDESIGN.md](REDESIGN.md) for the app-centric authority contract.
 
-All commands run from `on-prem-lite/scripts/`. Copy `config.env.example` →
-`config.env` and fill it before starting.
+Two CLIs, one per role:
 
-> **vendor==operator simplification (this test):** the vendor and operator are the
-> same host, so `vendor-release.sh` derives the registered workload image ref from
-> the operator's `AR_*` fields. A true vendor/operator split would instead resolve
-> the registry operator-side (out of scope here).
+- vendor: `deploy/vendor/authority.sh` (persists `.vendor-config`)
+- operator: `deploy/operator/operator.sh` (persists `config.env`)
+
+The shared launcher build lives in `deploy/templates/` and is rendered identically
+by both sides (`dstack-cloud prepare` → same `compose_hash`).
 
 ---
 
 ## Vendor
 
-The vendor owns the License-signing key, the image-encryption keyring, and the
-policy whitelists. Everything the vendor pins is **measured** into the launcher's
-`compose_hash`, so a tampered launcher is refused at the Authority.
-
-### Prerequisites
-
-- docker + docker compose, skopeo, `dstack-cloud`, python3, curl.
-- internet egress (the Authority's verifier fetches Intel TDX quote collateral).
-- `config.env`: `AUTHORITY_URL=http://localhost:8084`, `AUTHORITY_ADMIN_TOKEN`,
-  `PUBREG`, `IMAGE_KID`, `WORKLOAD_SRC`, `WORKLOAD_NAME`, `USER_ID`,
-  `OS_VERSION`, and the operator `AR_*` fields (for the image-ref derivation).
-
-### 1. deploy the Authority
+Run from `on-prem-lite/deploy/vendor/`. First `launch` generates + persists the
+signing seed, admin token, nonce secret, and the Authority pubkey into
+`.vendor-config` (gitignored).
 
 ```bash
-./deploy-authority.sh
+# 1. start authority + verifier; render templates/* (pin lite-launcher@digest +
+#    literal AUTHORITY_PUBKEY); prepare → compose_hash; register the launcher build.
+./authority.sh launch --launcher-image cr.kvin.wang/lite-launcher:latest \
+                      --os-version dstack-cloud-nvidia-0.6.1
+
+# 2. mint a global image-encryption keypair (CEK).
+./authority.sh add-cek vendor-keyring
+
+# 3. encrypt the workload image (JWE to the CEK pubkey) and register it.
+./authority.sh enc-img --cek vendor-keyring --image-name whoami-lite \
+                      docker.io/acme/whoami:latest cr.kvin.wang/whoami-lite-enc:latest
+
+# 4. create a tenant (operator) — prints the api_key ONCE; deliver to the operator.
+./authority.sh add-user acme-corp
+
+# 5. register an app (authority assigns a random 40-hex app_id) bound to the image.
+./authority.sh add-app whoami --image-name whoami-lite --usage "curl http://<ip>:8080"
+
+# 6. grant the tenant access to the app.
+./authority.sh grant-app --user acme-corp --app whoami
+
+# 7. print the operator's one-line install command (resolves app_id + api_key).
+./authority.sh install-cmd --app whoami --user acme-corp
 ```
 
-Brings up the authority + `dstack-verifier` from `docker-compose.authority.yml`
-on **:8084** and prints `AUTHORITY_PUBKEY` (also saved to `.authority-pubkey`).
-The pubkey is **stable across restarts** (the Ed25519 signing key is persisted in
-the authority volume).
+Step 7 prints something like:
 
-### 2. cut a release
-
-```bash
-./vendor-release.sh        # run ONCE per workload release
+```
+AUTHORITY_API_KEY=… AUTHORITY_URL=https://authority.acme.example ./operator.sh install <app-id>
 ```
 
-This single command:
-
-1. **mints the global image key** (`IMAGE_KID`, EC P-256) and saves its public PEM
-   — images are JWE-encrypted to it; the private key is the per-image CEK and is
-   never published.
-2. **publishes the lite-launcher** to `$PUBREG/lite-launcher:latest` (pull+retag
-   from `LITE_LAUNCHER_SRC`, or build from `launcher/Dockerfile` when blank).
-3. **JWE-encrypts the workload** (`skopeo copy --encryption-key jwe:…`) to
-   `$PUBREG/$WORKLOAD_NAME:latest`.
-4. **creates the tenant** (`USER_ID`) — printing its api key once — and **the app**
-   (the Authority assigns a 40-hex `app_id` when `APP_ID` is blank).
-5. **fills `deploy/workload/`** from the template, pinning the three **measured**
-   values into the compose: the `lite-launcher` digest, the literal base64
-   `AUTHORITY_PUBKEY`, and the `app_id`; and writing `app_id` + `os_image` into
-   `app.json`.
-6. **computes the launcher `compose_hash`** (`dstack-cloud … prepare`, then sha256
-   of `shared/app-compose.json`).
-
-It then registers the policy the Authority gates on:
-
-- the **launcher compose_hash** → `allowed_launcher_digests` (G6 — which launcher
-  build may run). Because `AUTHORITY_PUBKEY` and `app_id` are baked into the
-  compose, this hash measures *which authority and which app* the launcher trusts.
-- the **workload digest** (`sha256:…`, with its `image` ref and `kid`) under the
-  app → `allowed_workload_digests` (G7 — which encrypted image the License may
-  authorize).
-
-Finally it writes `deploy/.release-manifest.env` (`APP_ID`,
-`LAUNCHER_COMPOSE_HASH`, `WORKLOAD_IMAGE_DIGEST`, `LITE_LAUNCHER_DIGEST`,
-`AUTHORITY_PUBKEY`, `WORKLOAD_IMAGE`).
-
-### 3. deliver to the operator
-
-- the 2 images in `$PUBREG` (`lite-launcher`, `$WORKLOAD_NAME`);
-- the filled `deploy/workload/` template and `deploy/.release-manifest.env`;
-- the tenant **api key** (set it as the operator's `AUTHORITY_API_KEY`).
+> **TLS is the vendor's job.** `AUTHORITY_URL` must be HTTPS when the operator is
+> remote — terminate TLS in front of the Authority (reverse proxy / managed cert).
+> The courier carries only opaque blobs, but the api_key is a Bearer credential.
 
 ---
 
 ## Operator
 
-The operator deploys one CVM and runs the courier. The operator is **untrusted**:
-it relays opaque blobs between the Authority and the launcher and is never a trust
-anchor.
-
-### Prerequisites
-
-- `gcloud` (authenticated; IAP + Artifact Registry access), skopeo,
-  `dstack-cloud`, python3 (`requests`), curl.
-- the vendor-delivered `deploy/workload/` + `deploy/.release-manifest.env`.
-- `config.env`: `GCP_PROJECT`, `GCP_ZONE`, `AR_LOCATION/AR_PROJECT/AR_REPO`,
-  `PUBREG`, `OS_VERSION`, `WORKLOAD_IP`, `WORKLOAD_NAME`, `USER_ID`,
-  `AUTHORITY_URL` (reachable from the operator host), `AUTHORITY_API_KEY`.
-
-### deploy + license
+Run from `on-prem-lite/deploy/operator/`. Paste the vendor's printed command:
 
 ```bash
-./operator-deploy.sh all        # sync → deploy → license
+AUTHORITY_API_KEY=… AUTHORITY_URL=https://authority.acme.example \
+    ./operator.sh install <app-id>
 ```
 
-or run the stages individually:
-
-- **`sync`** — mirrors `lite-launcher` + the encrypted workload from `$PUBREG`
-  into the operator AR (so the no-internet CVM pulls over Private Google Access),
-  and pulls the dstack OS image.
-- **`deploy`** — reserves `WORKLOAD_IP`, fills `app.json` (project/zone/bucket/
-  private_ip/`instance_name=dstack-lite-workload`/os_image), writes
-  `.user-config` (`DSTACK_REGISTRY`), then `prepare` + `deploy`, and opens the
-  courier port (`fw allow 9000`). dstack-cloud is configured **without
-  `kms_urls`** — the lite profile has no KMS.
-- **`license`** — opens an IAP tunnel to `dstack-lite-workload:9000` → localhost
-  `:19000`, waits for `/healthz`, then runs the courier
-  (`cli/license-ctl.py attest`): the launcher attests (TDX+vTPM), the Authority
-  verifies and returns `{license, sealed_cek}`, and the launcher HPKE-opens the
-  CEK, decrypts the workload, and runs it. It then polls `/status` until
-  `workload_running: true`.
-
----
-
-## Day-2
-
-Re-run the courier to issue a fresh License — a higher `seq`, a later
-`expires_at`, and optionally a new workload digest (rolling update):
+First run fetches the bundle, then writes a commented `config.env` and exits asking
+you to fill it:
 
 ```bash
-./operator-deploy.sh update          # = re-run the license stage
-# or directly:  cli/license-ctl.py renew
+# edit config.env: GCP_PROJECT, GCP_ZONE, AR_LOCATION/AR_PROJECT/AR_REPO,
+#                  WORKLOAD_IP, OS_VERSION
+$EDITOR config.env
+
+# re-run the same command — it now runs end to end:
+AUTHORITY_API_KEY=… AUTHORITY_URL=https://authority.acme.example \
+    ./operator.sh install <app-id>
 ```
 
-The launcher persists the highest installed `seq` and refuses any `seq ≤` it
-(anti-rollback), and pins `AUTHORITY_PUBKEY` to verify the signature (G8).
+`install` does, in order:
 
-**Expiry stops the workload.** Each License carries `expires_at +
-grace_period_secs`; a launcher watchdog stops the workload once
-`now > expires_at + grace`. So a lapsed/unrenewed License simply lets the current
-one run out — stopping the courier can't extend it, and a still-valid License
-can't be forged or stretched (it's Ed25519-signed). For an evaluation that never
-needs renewal, set a very large `LICENSE_TTL_SECS` on the Authority.
+1. `GET /api/v1/app/<app-id>/bundle` (Bearer api_key).
+2. write `deploy-work/` from the bundle (`docker_compose`, `app_json`, `prelaunch`);
+   set `app_json.app_id=<app-id>` + GCP fields + `.user-config {DSTACK_REGISTRY:<AR>}`.
+3. sync the two images (lite-launcher + workload) bundle→AR with digest-preserving
+   skopeo; pull the OS image.
+4. `dstack-cloud prepare && deploy`; assert local `compose_hash == bundle.compose_hash`
+   (die on mismatch); `fw allow 9000`.
+5. courier over an IAP tunnel: challenge → courier/init → license → courier/install.
+6. print the app's `usage_text`.
+
+Day-2 / other subcommands:
+
+```bash
+./operator.sh sync   <app-id>   # re-sync the bundle's images into your AR (step 3 only)
+./operator.sh update <app-id>   # re-run the license flow (renew / rolling update)
+./operator.sh status            # IAP-tunnel → launcher /status
+./operator.sh healthz           # IAP-tunnel → launcher /healthz
+```
+
+The workload image's registry prefix is **not** gated by the Authority — only the
+digest is (the security anchor). The operator passes its own AR ref
+(`<AR>/<image_name>`) as `workload_image`; the Authority signs it verbatim after
+gating the digest, so the unchanged launcher pulls `image@digest` from the AR.
