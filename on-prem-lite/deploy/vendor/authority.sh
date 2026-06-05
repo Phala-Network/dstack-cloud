@@ -24,7 +24,7 @@ LITE_ROOT="$(cd "$HERE/../.." && pwd)"                                  # on-pre
 REPO_ROOT="$(cd "$LITE_ROOT/.." && pwd)"                                # repo root
 TEMPLATES="$LITE_ROOT/deploy/templates"
 COMPOSE="$LITE_ROOT/docker-compose.authority.yml"
-DC="$REPO_ROOT/scripts/bin/dstack-cloud"
+DC="${DSTACK_CLOUD:-$REPO_ROOT/scripts/bin/dstack-cloud}"
 
 CONFIG="$HERE/.vendor-config"
 CEK_DIR="$HERE/.ceks"
@@ -141,7 +141,7 @@ cmd_launch() {
     [[ -d "$TEMPLATES" ]] || c_die "templates dir not found: $TEMPLATES"
     local tmp
     tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
+    trap 'rm -rf "${tmp:-}"' RETURN   # guard: a RETURN trap leaks to later returns
     cp -a "$TEMPLATES"/. "$tmp/"
     [[ -f "$tmp/docker-compose.yaml" ]] || c_die "templates missing docker-compose.yaml"
     [[ -f "$tmp/app.json" ]]            || c_die "templates missing app.json"
@@ -207,6 +207,22 @@ PY
     c_step "launcher build registered"
     c_ok "AUTHORITY_PUBKEY=$AUTHORITY_PUBKEY"
     c_ok "compose_hash=$compose_hash"
+
+    # ── 4. register the approved os_image_hash (G4, fail-closed) ────────────────
+    # read from the OS release's auth_hash.txt — the same value the verifier
+    # extracts from the vTPM event log at boot.
+    c_step "register os_image_hash (G4)"
+    local os_img hashfile os_hash
+    os_img="${OS_VERSION//./-}"
+    hashfile="$HOME/.dstack/images/$os_img/auth_hash.txt"
+    if [[ -n "$OS_VERSION" && -f "$hashfile" ]]; then
+        os_hash="$(cat "$hashfile")"
+        admin_curl POST /api/v1/admin/os-images "{\"hash\":\"$os_hash\"}" >/dev/null \
+            && c_ok "registered os_image_hash=$os_hash"
+    else
+        c_warn "os auth_hash.txt not found (OS_VERSION='$OS_VERSION', $hashfile); G4 is fail-closed —"
+        c_warn "  set OS_VERSION + 'dstack-cloud pull \$OS_VERSION', or POST /admin/os-images manually."
+    fi
 }
 
 # ════════════════════════════════════════════════════════════════════════════

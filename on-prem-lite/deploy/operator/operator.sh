@@ -22,7 +22,7 @@ set -euo pipefail
 # ─── paths ────────────────────────────────────────────────────────────────────
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"            # …/on-prem-lite/deploy/operator
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"                        # repo root
-DC="$REPO_ROOT/scripts/bin/dstack-cloud"                        # repo-relative dstack-cloud
+DC="${DSTACK_CLOUD:-$REPO_ROOT/scripts/bin/dstack-cloud}"                        # repo-relative dstack-cloud
 DEPLOY_DIR="$HERE/deploy-work"                                  # generated deploy dir
 CONFIG="$HERE/config.env"
 
@@ -112,7 +112,10 @@ cur=d
 for k in sys.argv[2].split("."):
     if isinstance(cur,dict) and k in cur: cur=cur[k]
     else: cur=""; break
-print(cur if isinstance(cur,str) else json.dumps(cur))
+# write VERBATIM (no trailing newline): the docker_compose / prelaunch strings are
+# embedded byte-for-byte into the measured app-compose.json, so an extra newline
+# would change compose_hash. (command substitution strips trailing newlines anyway.)
+sys.stdout.write(cur if isinstance(cur,str) else json.dumps(cur))
 PY
 }
 

@@ -291,7 +291,15 @@ def _verify_launcher_attestation(req: LicenseRequest, tenant_id: str) -> tuple:
     req_app_id = (req.app_id or "").lower()
     if not req_app_id:
         raise HTTPException(status_code=403, detail="app_id required")
-    if attested_app_id != req_app_id:
+    # TEMPORARY (test only): on a pre-#714 OS image the attested app_id is forced to
+    # compose_hash[:20], so it never equals the authority-assigned request app_id.
+    # LITE_TEST_SKIP_ATTESTED_APP_ID lets the rest of the flow be exercised on the old
+    # image. MUST be unset in production — remove once the #714 OS image ships.
+    if os.getenv("LITE_TEST_SKIP_ATTESTED_APP_ID", "").lower() in ("1", "true", "yes"):
+        logger.warning("license %s: LITE_TEST_SKIP_ATTESTED_APP_ID set — NOT checking attested "
+                       "app_id (%s) == request app_id (%s); TEST-ONLY (old OS image)",
+                       tenant_id, attested_app_id or "none", req_app_id)
+    elif attested_app_id != req_app_id:
         raise HTTPException(status_code=403,
                             detail=f"attested app_id '{attested_app_id or 'none'}' != request app_id '{req_app_id}'")
     if store.get_app_by_id(req_app_id) is None:
