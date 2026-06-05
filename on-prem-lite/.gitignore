@@ -13,3 +13,5 @@ deploy/vendor/.vendor-config
 deploy/operator/config.env
 deploy/operator/deploy-work/
 deploy/workload/
+deploy/vendor/.ceks/
+deploy/vendor/.users/
