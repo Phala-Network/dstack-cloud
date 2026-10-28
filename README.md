@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> **This repository is archived.** Its functionality has been merged into upstream [dstack](https://github.com/Dstack-TEE/dstack). Please use dstack instead.
+
 <div align="center">
 
 ![dstack-cloud](./dstack-logo.svg)
